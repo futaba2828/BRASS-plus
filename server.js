@@ -7,84 +7,101 @@ import { fileURLToPath } from 'node:url';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
 const PORT = Number(process.env.PORT || 3000);
-const DATA_DIR = path.join(__dirname, 'data');
+const DATA_DIR = process.env.BRASS_DATA_DIR || path.join(__dirname, 'data');
 const DATA_FILE = path.join(DATA_DIR, 'groups.json');
-const MAX_BODY = process.env.BRASS_MAX_BODY || '15mb';
-
-app.use(express.json({limit: MAX_BODY}));
-app.use(express.urlencoded({extended:false, limit:'1mb'}));
-app.use((req,res,next)=>{
-  res.setHeader('Access-Control-Allow-Origin','*');
-  res.setHeader('Access-Control-Allow-Headers','Content-Type');
-  res.setHeader('Access-Control-Allow-Methods','GET,POST,OPTIONS');
-  if(req.method==='OPTIONS') return res.sendStatus(204);
+app.use(express.json({ limit: process.env.BRASS_MAX_BODY || '15mb' }));
+app.use(express.urlencoded({ extended: false, limit: '1mb' }));
+app.use((req, res, next) => {
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+  res.setHeader('Access-Control-Allow-Methods', 'GET,POST,OPTIONS');
+  if (req.method === 'OPTIONS') return res.sendStatus(204);
   next();
 });
 app.use(express.static(__dirname));
 
-async function readDB(){
-  try { return JSON.parse(await fs.readFile(DATA_FILE,'utf8')); }
-  catch { return {groups:{}}; }
+async function readDB() {
+  try { return JSON.parse(await fs.readFile(DATA_FILE, 'utf8')); }
+  catch { return { groups: {} }; }
 }
-async function writeDB(db){
-  await fs.mkdir(DATA_DIR,{recursive:true});
-  const tmp=DATA_FILE+'.tmp';
-  await fs.writeFile(tmp,JSON.stringify(db,null,2),'utf8');
-  await fs.rename(tmp,DATA_FILE);
+async function writeDB(db) {
+  await fs.mkdir(DATA_DIR, { recursive: true });
+  const tmp = DATA_FILE + '.tmp';
+  await fs.writeFile(tmp, JSON.stringify(db, null, 2), 'utf8');
+  await fs.rename(tmp, DATA_FILE);
 }
-function cleanText(v,max=200){return String(v??'').trim().slice(0,max)}
-function code(){return crypto.randomBytes(4).toString('hex').toUpperCase().slice(0,6)}
-function newGroup(name,owner){
-  return {code:code(),name:cleanText(name,80)||'BRASS+グループ',createdAt:new Date().toISOString(),members:[{name:cleanText(owner,40)||'未設定',joinedAt:new Date().toISOString()}],data:{goals:[],practices:[],issues:[],mornings:{},songs:[],lessons:[],posts:[],recommendations:[],voices:[],mySlides:[],tags:[],scaleChecks:{}}};
+const cleanText = (v, max = 200) => String(v ?? '').trim().slice(0, max);
+const normalizeCode = v => cleanText(v, 32).toUpperCase();
+const randomCode = () => crypto.randomBytes(4).toString('hex').toUpperCase().slice(0, 6);
+const emptyData = () => ({ goals: [], practices: [], issues: [], mornings: {}, songs: [], lessons: [], posts: [], recommendations: [], voices: [], tags: [], scaleChecks: {} });
+function newGroup(code, name, owner) {
+  return { code, name: cleanText(name, 80) || 'BRASS+グループ', createdAt: new Date().toISOString(), members: [{ name: cleanText(owner, 40) || '未設定', joinedAt: new Date().toISOString(), profile: null }], data: emptyData() };
 }
-function mergeArray(target,incoming){
-  const map=new Map((Array.isArray(target)?target:[]).map(x=>[x?.id,x]));
-  for(const x of (Array.isArray(incoming)?incoming:[])){
-    if(!x?.id) continue;
-    map.set(String(x.id),x);
+function mergeArray(target, incoming) {
+  const map = new Map((Array.isArray(target) ? target : []).filter(x => x?.id).map(x => [String(x.id), x]));
+  for (const x of (Array.isArray(incoming) ? incoming : [])) {
+    if (!x?.id || x.share === 'private') continue;
+    map.set(String(x.id), x);
   }
   return [...map.values()].slice(-1000);
 }
-function mergeData(group,incoming){
-  const allowed=['goals','practices','issues','songs','lessons','posts','recommendations','voices','mySlides','tags'];
-  for(const k of allowed) group.data[k]=mergeArray(group.data[k],incoming?.[k]);
-  group.data.mornings={...(group.data.mornings||{}),...(incoming?.mornings||{})};
-  group.data.scaleChecks={...(group.data.scaleChecks||{}),...(incoming?.scaleChecks||{})};
+function mergeData(group, incoming) {
+  const allowed = ['goals', 'practices', 'issues', 'songs', 'lessons', 'posts', 'recommendations', 'voices', 'tags'];
+  for (const k of allowed) group.data[k] = mergeArray(group.data[k], incoming?.[k]);
+  group.data.mornings = { ...(group.data.mornings || {}), ...(incoming?.mornings || {}) };
+  group.data.scaleChecks = { ...(group.data.scaleChecks || {}), ...(incoming?.scaleChecks || {}) };
+  // Myポジション表はサーバーへ保存しない（個人専用）
+  delete group.data.mySlides;
 }
-
-app.get('/api/health',async(req,res)=>res.json({ok:true,service:'BRASS+',version:'complete-1'}));
-app.post('/api/groups',async(req,res)=>{
-  const db=await readDB();
-  let g;
-  do {g=newGroup(req.body?.name,req.body?.owner)} while(db.groups[g.code]);
-  db.groups[g.code]=g;
+app.get('/api/health', (req, res) => res.json({ ok: true, service: 'BRASS+', version: 'complete-2' }));
+app.post('/api/groups', async (req, res) => {
+  const db = await readDB();
+  let requested = normalizeCode(req.body?.code);
+  if (requested && !/^[A-Z0-9]{1,32}$/.test(requested)) return res.status(400).json({ error: 'グループコードは英大文字（A〜Z）と数字（0〜9）のみ、32文字以内で入力してください。' });
+  if (requested && db.groups[requested]) return res.status(409).json({ error: 'すでに存在しています。同じコードは使えません。' });
+  let code = requested;
+  if (!code) { do { code = randomCode(); } while (db.groups[code]); }
+  const g = newGroup(code, req.body?.name, req.body?.owner);
+  db.groups[code] = g;
   await writeDB(db);
-  res.json({ok:true,code:g.code,name:g.name});
+  res.json({ ok: true, code: g.code, name: g.name, members: g.members, data: g.data });
 });
-app.get('/api/groups/:code',async(req,res)=>{
-  const db=await readDB(); const g=db.groups[String(req.params.code).toUpperCase()];
-  if(!g) return res.status(404).json({error:'グループが見つかりません'});
-  res.json({ok:true,code:g.code,name:g.name,members:g.members,data:g.data});
+app.get('/api/groups/:code', async (req, res) => {
+  const db = await readDB(); const g = db.groups[normalizeCode(req.params.code)];
+  if (!g) return res.status(404).json({ error: 'グループが見つかりません' });
+  res.json({ ok: true, code: g.code, name: g.name, members: g.members, data: g.data });
 });
-app.post('/api/groups/:code/join',async(req,res)=>{
-  const db=await readDB(); const g=db.groups[String(req.params.code).toUpperCase()];
-  if(!g) return res.status(404).json({error:'グループが見つかりません'});
-  const name=cleanText(req.body?.name,40)||'未設定';
-  if(!g.members.some(m=>m.name===name)) g.members.push({name,joinedAt:new Date().toISOString()});
-  g.members=g.members.slice(-100);
-  await writeDB(db);
-  res.json({ok:true,code:g.code,name:g.name,members:g.members,data:g.data});
+app.post('/api/groups/:code/join', async (req, res) => {
+  const db = await readDB(); const g = db.groups[normalizeCode(req.params.code)];
+  if (!g) return res.status(404).json({ error: 'グループが見つかりません' });
+  const name = cleanText(req.body?.name, 40) || '未設定';
+  if (!g.members.some(m => m.name === name)) g.members.push({ name, joinedAt: new Date().toISOString(), profile: null });
+  g.members = g.members.slice(-100); await writeDB(db);
+  res.json({ ok: true, code: g.code, name: g.name, members: g.members, data: g.data });
 });
-app.post('/api/groups/:code/sync',async(req,res)=>{
-  const db=await readDB(); const g=db.groups[String(req.params.code).toUpperCase()];
-  if(!g) return res.status(404).json({error:'グループが見つかりません'});
-  const name=cleanText(req.body?.member,40)||'未設定';
-  if(!g.members.some(m=>m.name===name)) g.members.push({name,joinedAt:new Date().toISOString()});
-  mergeData(g,req.body?.data||{});
-  g.updatedAt=new Date().toISOString();
-  await writeDB(db);
-  res.json({ok:true,data:g.data,members:g.members});
+app.post('/api/groups/:code/sync', async (req, res) => {
+  const db = await readDB(); const g = db.groups[normalizeCode(req.params.code)];
+  if (!g) return res.status(404).json({ error: 'グループが見つかりません' });
+  const name = cleanText(req.body?.member, 40) || '未設定';
+  if (!g.members.some(m => m.name === name)) g.members.push({ name, joinedAt: new Date().toISOString(), profile: null });
+  g.members = g.members.slice(-100); mergeData(g, req.body?.data || {}); g.updatedAt = new Date().toISOString();
+  await writeDB(db); res.json({ ok: true, data: g.data, members: g.members });
 });
-
-app.use((req,res)=>res.sendFile(path.join(__dirname,'index.html')));
-app.listen(PORT,'0.0.0.0',()=>console.log(`BRASS+ server running on http://localhost:${PORT}`));
+app.post('/api/analyze', (req, res) => {
+  const issues = Array.isArray(req.body?.issues) ? req.body.issues : [];
+  const counts = {};
+  for (const issue of issues) for (const tag of (Array.isArray(issue.tags) ? issue.tags : [])) counts[cleanText(tag, 40)] = (counts[cleanText(tag, 40)] || 0) + 1;
+  const top = Object.entries(counts).filter(([k]) => k).sort((a, b) => b[1] - a[1]).slice(0, 5);
+  const suggestions = {
+    '音程': ['チューナーを使い、ロングトーンで音の中心を確認する。', '小さな音量でも音程が安定するか確認する。'],
+    'リズム': ['難しい小節だけを取り出し、ゆっくりから練習する。', 'メトロノームに合わせて手拍子してから楽器で吹く。'],
+    '息': ['息の流れを一定にして、無理のない音量でロングトーンを行う。'],
+    '発音': ['息の流れを先に作り、ゆっくりしたテンポで音の立ち上がりを確認する。'],
+    'タンギング': ['ゆっくりしたテンポで、音の長さと粒をそろえて練習する。']
+  };
+  const tips = top.map(([tag, count]) => ({ title: `${tag}（${count}件）`, text: (suggestions[tag] || ['課題を短い部分に分け、ゆっくり確認してから少しずつテンポを上げる。']).join(' '), url: 'https://www.yamaha.com/ja/musical_instrument_guide/trombone/' }));
+  if (!tips.length && issues.length) tips.push({ title: '課題を整理する', text: '課題点にタグを付けると、傾向をより分かりやすく分析できます。まずは一度に一つの課題に絞って練習しましょう。', url: 'https://www.yamaha.com/ja/musical_instrument_guide/trombone/' });
+  res.json({ ok: true, summary: issues.length ? `${issues.length}件の課題点をもとに、タグの多い順で練習のヒントをまとめました。これはルールベースの分析で、生成AIによる分析ではありません。` : '課題点がまだ登録されていません。課題点を登録してから、もう一度分析してください。', tips });
+});
+app.use((req, res) => res.sendFile(path.join(__dirname, 'index.html')));
+app.listen(PORT, '0.0.0.0', () => console.log(`BRASS+ server running on port ${PORT}`));
