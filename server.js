@@ -83,7 +83,9 @@ app.post('/api/groups/:code/sync', async (req, res) => {
   const db = await readDB(); const g = db.groups[normalizeCode(req.params.code)];
   if (!g) return res.status(404).json({ error: 'グループが見つかりません' });
   const name = cleanText(req.body?.member, 40) || '未設定';
-  if (!g.members.some(m => m.name === name)) g.members.push({ name, joinedAt: new Date().toISOString(), profile: null });
+  let member = g.members.find(m => m.name === name);
+  if (!member) { member = { name, joinedAt: new Date().toISOString(), profile: null }; g.members.push(member); }
+  if (req.body?.profile && typeof req.body.profile === 'object') member.profile = { instrument: cleanText(req.body.profile.instrument, 60), grade: cleanText(req.body.profile.grade, 30), intro: cleanText(req.body.profile.intro, 240), trombonist: cleanText(req.body.profile.trombonist, 100) };
   g.members = g.members.slice(-100); mergeData(g, req.body?.data || {}); g.updatedAt = new Date().toISOString();
   await writeDB(db); res.json({ ok: true, data: g.data, members: g.members });
 });
