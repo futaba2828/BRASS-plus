@@ -134,7 +134,7 @@ function renderNav(){
    b.addEventListener('click',e=>{
      e.preventDefault(); e.stopPropagation();
      if(b.dataset.longPressed==='1'){b.dataset.longPressed='0';return;}
-     if(b.dataset.nav==='records')openRecords();else go(b.dataset.nav);
+     if(b.dataset.nav==='records'){S.view='records';render();}else{go(b.dataset.nav);}
    });
    b.addEventListener('pointerleave',()=>{if(!dragging)clear();});
  });
@@ -314,14 +314,34 @@ function delIssue(id){S.issues=S.issues.filter(x=>x.id!==id);save();toast('削�
 function completeIssue(id){let x=S.issues.find(x=>x.id===id);x.done=!x.done;save();toast(x.done?'課題点を完了しました':'未完了に戻しました')}
 
 function analysis(){
- let counts={};(S.issues||[]).forEach(x=>(x.tags||[]).forEach(t=>counts[t]=(counts[t]||0)+1));let top=Object.entries(counts).sort((a,b)=>b[1]-a[1]);
- if(!top.length)return `<div class="analysis"><div class="between"><b>課題点の分析</b><button class="btn small" onclick="runServerAnalysis()">サーバーで分析</button></div><p class="muted">課題点の内容・タグをサーバーに送って、練習のヒントをまとめます。</p><p>サーバー接続後は、登録されたタグ・課題内容をもとに外部の信頼できる音楽教育サイトを参照して、より具体的な練習方法とURLを表示できる構成にしています。</p><div class="analysis-links">${analysisSources()}</div></div>`;
- let max=top[0][1],advice={発音:'発音は息の流れ・舌の位置・音の立ち上がりを分けて確認しましょう。',音程:'ロングトーンとチューナーで音の中心を確認しましょう。',リズム:'メトロノームや手拍子でリズムを先に確認しましょう。',息:'一定の息の流れを意識してロングトーンで確認しましょう。',タンギング:'息を止めすぎず、ゆっくり均一なタンギングから確認しましょう。'};
- return `<div class="analysis"><div class="between"><b>課題点の分析</b><button class="btn small" onclick="runServerAnalysis()">サーバーで分析</button></div><p>いちばん多いタグ：<strong>${esc(top[0][0])}</strong>（${max}件）</p>${top.slice(0,8).map(([t,n])=>`<div style="padding:7px 0;border-top:1px solid var(--line)"><div class="between"><span class="tag selected">${esc(t)}</span><b>${n}件</b></div><div class="muted">${esc(advice[t]||'このタグの課題を、ゆっくり原因ごとに分けて確認してみましょう。')}</div></div>`).join('')}<div class="analysis-links"><b>参考サイト</b>${analysisSources()}</div></div>`;
-}
-async function runServerAnalysis(){try{const d=await serverJson('/api/analyze',{method:'POST',body:JSON.stringify({issues:(S.issues||[]).map(x=>({title:x.title,tags:x.tags||[],memo:x.memo||''}))})});openModal(`<h3>課題点の分析結果</h3><p>${esc(d.summary||'分析しました')}</p>${(d.tips||[]).map(x=>`<div class="card"><b>${esc(x.title||'練習のヒント')}</b><p>${esc(x.text||'')}</p>${x.url?`<a href="${esc(x.url)}" target="_blank" rel="noopener">参考サイトを開く</a>`:''}</div>`).join('')}<button class="btn" onclick="closeModal()">閉じる</button>`)}catch(e){toast('分析できません：'+e.message)}}
-function analysisSources(){return `<div class="source-link"><a target="_blank" rel="noopener" href="https://www.yamaha.com/ja/musical_instrument_guide/trombone/play/play002.html">ヤマハ：トロンボーンの運指表</a></div><div class="source-link"><a target="_blank" rel="noopener" href="https://www.yamaha.com/ja/musical_instrument_guide/trombone/mechanism/mechanism004.html">ヤマハ：スライド7ポジションの解説</a></div><div class="source-link"><a target="_blank" rel="noopener" href="https://trombone.net/resources-events/links/">International Trombone Association：トロンボーン関連リソース</a></div>`}
+ const issues=Array.isArray(S.issues)?S.issues:[];
+ const words=issues.map(x=>({title:String(x.title||''),detail:String(x.detail||''),memo:String(x.memo||''),tags:Array.isArray(x.tags)?x.tags:[],done:!!x.done}));
+ const counts={}; words.forEach(x=>x.tags.forEach(t=>{const k=String(t||'').trim();if(k)counts[k]=(counts[k]||0)+1;}));
+ const top=Object.entries(counts).sort((a,b)=>b[1]-a[1]);
+ const adviceFor=(text)=>{const t=String(text||'').toLowerCase();
+   if(/タンギング|発音|舌|tongue/.test(t))return 'ゆっくりしたテンポで、音の粒と息の流れがそろうか確認しましょう。';
+   if(/音程|ピッチ|チューナー|intonation/.test(t))return 'チューナーを使い、ロングトーンで音の中心と音の入りを確認しましょう。';
+   if(/高音|ハイ.*トーン|高い音|high note/.test(t))return '無理に押さず、息の流れと口の形を確認しながら中音域から少しずつつなげましょう。';
+   if(/低音|low note/.test(t))return '息を安定させ、無理に口を締めずにゆっくりしたロングトーンで確認しましょう。';
+   if(/スライド|ポジション|音階/.test(t))return 'チューナーで各音を確認し、ゆっくりした音階練習から正確さを固めましょう。';
+   if(/リズム|テンポ|拍/.test(t))return 'メトロノームを遅めに設定し、手拍子やリズム読みをしてから楽器で練習しましょう。';
+   if(/息|ブレス|音が続か|ロングトーン/.test(t))return 'ロングトーンで息の流れを一定にし、自然なブレス位置を確認しましょう。';
+   return '入力した課題を短いフレーズに分け、ゆっくり練習してから少しずつテンポを上げましょう。';};
+ const resourceSets=[
+  {match:/タンギング|発音|舌/i,items:[['Yamaha｜管楽器の演奏・お手入れガイド','https://www.yamaha.com/en/musical_instrument_guide/'],['YouTube｜トロンボーンのタンギング解説動画','https://www.youtube.com/results?search_query='+encodeURIComponent('トロンボーン タンギング 練習 解説')]]},
+  {match:/音程|ピッチ|チューナー|スライド|ポジション|音階/i,items:[['Trombone｜演奏の基礎を学ぶ','https://www.trombone.org/'],['YouTube｜トロンボーンの音程・ポジション練習','https://www.youtube.com/results?search_query='+encodeURIComponent('トロンボーン 音程 ポジション 練習')]]},
+  {match:/高音|低音|息|ブレス|ロングトーン|音がかすれ/i,items:[['Yamaha｜管楽器の演奏ガイド','https://www.yamaha.com/en/musical_instrument_guide/'],['YouTube｜トロンボーンの音作り・ロングトーン','https://www.youtube.com/results?search_query='+encodeURIComponent('トロンボーン 高音 ロングトーン 練習')]]},
+  {match:/リズム|テンポ|拍/i,items:[['Musicca｜リズム練習','https://www.musicca.com/rhythm'],['YouTube｜吹奏楽 リズム練習','https://www.youtube.com/results?search_query='+encodeURIComponent('吹奏楽 リズム 練習方法')]]}
+];
+ const refreshCounts={};
+ const searchLinks=(q,key)=>{const query=String(q||'トロンボーン 吹奏楽 練習方法').trim().slice(0,180);const set=resourceSets.find(x=>x.match.test(query))||{items:[['Trombone｜演奏情報・学習リソース','https://www.trombone.org/'],['YouTube｜課題に関連する練習動画','https://www.youtube.com/results?search_query='+encodeURIComponent(query)]]};const list=set.items;const idx=(S.analysisRefs?.[key]||0)%list.length;return `<div class="analysis-links"><a target="_blank" rel="noopener" href="${esc(list[idx][1])}">${esc(list[idx][0])} ↗</a><button type="button" class="btn small" onclick="refreshAnalysisRef('${String(key).replace(/[^a-zA-Z0-9_-]/g,'')}')">参考サイトを更新 ↻</button></div>`;};
 
+ if(!issues.length)return `<div class="analysis"><b>自動分析</b><p class="muted">課題点を登録すると、入力した文字やタグに合わせて練習のヒントと参考サイトがここに自動表示されます。</p></div>`;
+ const tagRows=top.length?top.slice(0,8).map(([tag,n])=>`<div style="padding:8px 0;border-top:1px solid var(--line)"><div class="between"><span class="tag selected">${esc(tag)}</span><b>${n}件</b></div><div class="muted">${esc(adviceFor(tag))}</div>${searchLinks('トロンボーン '+tag+' 練習方法','tag'+encodeURIComponent(tag).replace(/%/g,''))}</div>`).join(''):'';
+ const issueRows=words.slice(0,12).map(x=>{const q=[x.title,...x.tags,x.detail,x.memo].filter(Boolean).join(' ');return `<div style="padding:8px 0;border-top:1px solid var(--line)"><b>${esc(x.title||x.tags.join('・')||'課題点')}</b><p class="muted">${esc(adviceFor(q))}</p>${searchLinks('トロンボーン '+q+' 練習方法','issue'+encodeURIComponent(x.title||x.tags.join('')).replace(/%/g,'').slice(0,40))}</div>`;}).join('');
+ return `<div class="analysis"><b>自動分析</b><p class="muted">課題点を保存・編集すると自動で更新されます。分析ボタンは不要です。</p>${top.length?`<p>多く登録されているタグ：<strong>${esc(top[0][0])}</strong>（${top[0][1]}件）</p>${tagRows}`:''}<h4>入力内容に関連する参考サイト・動画</h4>${issueRows}${!top.length?'<p class="muted">タグがなくても、課題点の入力内容から関連検索を作成します。</p>':''}</div>`;
+}
+function refreshAnalysisRef(key){S.analysisRefs=S.analysisRefs||[];S.analysisRefs[key]=((S.analysisRefs[key]||0)+1);saveLocalOnly();render();toast('参考サイトを更新しました')}
 function morning(){let y=currentCal.getFullYear(),m=currentCal.getMonth(),days=new Date(y,m+1,0).getDate(),first=new Date(y,m,1).getDay(),cells=[];for(let i=0;i<first;i++)cells.push('<div class="day other"></div>');for(let d=1;d<=days;d++){let ds=`${y}-${String(m+1).padStart(2,'0')}-${String(d).padStart(2,'0')}`, v=S.mornings[ds];cells.push(`<div class="day ${ds===today()?'today':''}" onclick="toggleMorning('${ds}')"><span class="num">${d}</span>${v?'<span class="dot goal1">出席</span>':''}</div>`)}return `<section class="page active"><div class="hero"><h2>朝練</h2><p>火〜金の4日間。過去の日付もタップで取り消し・記録できます。</p></div><div class="card"><div class="between"><button class="btn" onclick="moveCal(-1)">‹</button><b>${y}年${m+1}月</b><button class="btn" onclick="moveCal(1)">›</button></div><div class="calendar" style="margin-top:9px">${['日','月','火','水','木','金','土'].map(x=>`<div class="dow">${x}</div>`).join('')}${cells.join('')}</div><p class="muted">今週：${morningCount()}/4日　${morningCount()===4?'<b>4日達成・表彰対象</b>':'火〜金だけをカウントします。'}</p></div><div class="card"><h3>朝練王</h3>${morningRanking()}</div></section>`}
 function toggleMorning(ds){let day=new Date(ds+'T12:00:00').getDay();if(day===0||day===1||day===6)return toast('朝練は火〜金のみです');if(S.mornings[ds]){delete S.mornings[ds];toast('朝練を取り消しました')}else{S.mornings[ds]={by:S.profile.name||'自分'};toast('朝練を記録しました')}save()}
 function morningCount(){let now=new Date(),start=new Date(now);let day=now.getDay();let diff=day===0?6:day-2;if(diff<0)diff=0;start.setDate(now.getDate()-diff);let n=0;for(let i=0;i<4;i++){let d=new Date(start);d.setDate(start.getDate()+i);let ds=d.toISOString().slice(0,10);if(S.mornings[ds])n++}return n}
@@ -361,20 +381,19 @@ function delSong(id){S.songs=S.songs.filter(x=>x.id!==id);save();toast('削除�
 function zoomImg(src){openModal(`<img class="zoom" src="${src}"><div class="row" style="margin-top:10px"><button class="btn" onclick="closeModal()">閉じる</button></div>`)}
 
 function records(){
- let totalMorning=Object.keys(S.mornings||{}).length;
- let registeredGoals=S.goals||[], achievedGoals=registeredGoals.filter(x=>Number(x.star)===5);
- let registeredPractice=S.practices||[], completedPractice=registeredPractice.filter(x=>x.done);
- let registeredIssues=S.issues||[], completedIssues=registeredIssues.filter(x=>x.done);
+ const mornings=S.mornings||{}, goals=Array.isArray(S.goals)?S.goals:[], practices=Array.isArray(S.practices)?S.practices:[], issues=Array.isArray(S.issues)?S.issues:[], lessons=Array.isArray(S.lessons)?S.lessons:[];
+ let totalMorning=Object.keys(mornings).length;
+ let achievedGoals=goals.filter(x=>Number(x.star)===5), completedPractice=practices.filter(x=>x.done), completedIssues=issues.filter(x=>x.done);
  const countLine=(registered,completed)=>`<div class="record-counts"><span>登録 <b>${registered.length}</b>件</span><span>完了 <b>${completed.length}</b>件 ✓</span></div>`;
- const goalRows=registeredGoals.length?registeredGoals.map(x=>`<div class="goal-record"><span>${esc(x.title)}</span><span>${Number(x.star)===5?'<span class="badge">✓ 完了</span>':`<span class="stars">${[1,2,3,4,5].map(n=>n<=Number(x.star)?'★':'☆').join('')}</span>`}</span></div>`).join(''):'<div class="empty">ありません</div>';
- const practiceRows=registeredPractice.length?registeredPractice.map(x=>`<div class="practice-record"><span>${esc(x.title)}</span><span>${x.done?'<span class="badge">✓ 完了</span>':`<span class="muted">${esc(x.date||'')}</span>`}</span></div>`).join(''):'<div class="empty">ありません</div>';
- const issueRows=registeredIssues.length?registeredIssues.map(x=>`<div class="issue-link">${esc(x.title)} ${formatIssueMeasure(x)}${x.done?' <span class="badge">✓ 完了</span>':''}</div>`).join(''):'<div class="empty">ありません</div>';
+ const goalRows=goals.length?goals.map(x=>`<div class="goal-record"><span>${esc(x.title||'無題の目標')}</span><span>${Number(x.star)===5?'<span class="badge">✓ 完了</span>':`<span class="stars">${[1,2,3,4,5].map(n=>n<=Number(x.star)?'★':'☆').join('')}</span>`}</span></div>`).join(''):'<div class="empty">ありません</div>';
+ const practiceRows=practices.length?practices.map(x=>`<div class="practice-record"><span>${esc(x.title||'無題の練習')}</span><span>${x.done?'<span class="badge">✓ 完了</span>':`<span class="muted">${esc(x.date||'')}</span>`}</span></div>`).join(''):'<div class="empty">ありません</div>';
+ const issueRows=issues.length?issues.map(x=>`<div class="issue-link">${esc(x.title||'無題の課題点')} ${formatIssueMeasure(x)}${x.done?' <span class="badge">✓ 完了</span>':''}</div>`).join(''):'<div class="empty">ありません</div>';
  return `<section class="page active"><div class="hero"><h2>記録</h2></div>
  <div class="card"><h3>朝練</h3><div class="record-counts"><span>累計 <b>${totalMorning}</b>回</span></div></div>
- <div class="card"><h3>目標</h3>${countLine(registeredGoals,achievedGoals)}<div class="record-list">${goalRows}</div></div>
- <div class="card"><h3>練習</h3>${countLine(registeredPractice,completedPractice)}<div class="record-list">${practiceRows}</div></div>
- <div class="card"><h3>課題点</h3>${countLine(registeredIssues,completedIssues)}<div class="record-list">${issueRows}</div></div>
- <div class="card"><div class="between"><h3>レッスンの振り返り</h3><button class="btn primary" onclick="lessonForm()">＋記録</button></div>${S.lessons.length?S.lessons.map(lessonCard).join(''):'<div class="empty">まだありません</div>'}</div>
+ <div class="card"><h3>目標</h3>${countLine(goals,achievedGoals)}<div class="record-list">${goalRows}</div></div>
+ <div class="card"><h3>練習</h3>${countLine(practices,completedPractice)}<div class="record-list">${practiceRows}</div></div>
+ <div class="card"><h3>課題点</h3>${countLine(issues,completedIssues)}<div class="record-list">${issueRows}</div></div>
+ <div class="card"><div class="between"><h3>レッスンの振り返り</h3><button class="btn primary" onclick="lessonForm()">＋記録</button></div>${lessons.length?lessons.map(lessonCard).join(''):'<div class="empty">まだありません</div>'}</div>
  </section>`;
 }
 function lessonForm(x){
@@ -405,7 +424,7 @@ function saveRecommend(id){let u=val('rUrl');if(u&&!validUrl(u)){document.getEle
 function editRecommend(id){recommendForm(S.recommendations.find(x=>x.id===id))}
 function deleteRecommend(id){S.recommendations=S.recommendations.filter(x=>x.id!==id);save();toast('削除しました')}
 
-function settings(){return `<section class="page active"><div class="hero"><h2>設定</h2></div><div class="card"><h3>参加メンバー</h3><div id="groupMembersSettings"><p class="muted">グループに参加すると、メンバー名を押してプロフィールを確認できます。</p></div></div><div class="card"><h3>項目の並べ替え・表示</h3><p class="muted">タブの順番や表示・非表示を変更できます。</p><button class="btn primary" onclick="sectionSettings()">設定する</button></div><div class="card"><h3>AI・サーバー</h3><p class="muted">サーバー版では課題点をAI分析し、検索した信頼できる参考サイトのURLを表示できます。</p><button class="btn" onclick="runServerAnalysis()">課題点をサーバーで分析</button></div><div class="card"><h3>データ</h3><button class="btn" onclick="backup()">バックアップ</button><button class="btn" onclick="document.getElementById('restore').click()">復元</button><input id="restore" type="file" accept="application/json" hidden onchange="restore(this.files[0])"></div></section>`}
+function settings(){return `<section class="page active"><div class="hero"><h2>設定</h2></div><div class="card"><h3>参加メンバー</h3><div id="groupMembersSettings"><p class="muted">グループに参加すると、メンバー名を押してプロフィールを確認できます。</p></div></div><div class="card"><h3>項目の並べ替え・表示</h3><p class="muted">タブの順番や表示・非表示を変更できます。</p><button class="btn primary" onclick="sectionSettings()">設定する</button></div><div class="card"><h3>AI・サーバー</h3><p class="muted">サーバー版では課題点をAI分析し、検索した信頼できる参考サイトのURLを表示できます。</p><p class="muted">課題点の画面に、タグや入力内容に関連する分析と参考サイトが自動表示されます。</p></div><div class="card"><h3>データ</h3><button class="btn" onclick="backup()">バックアップ</button><button class="btn" onclick="document.getElementById('restore').click()">復元</button><input id="restore" type="file" accept="application/json" hidden onchange="restore(this.files[0])"></div></section>`}
 
 function backup(){let a=document.createElement('a');a.href=URL.createObjectURL(new Blob([JSON.stringify(S)],{type:'application/json'}));a.download='BRASS_PLUS_backup.json';a.click();toast('バックアップを作成しました')}
 function restore(file){if(!file)return;let r=new FileReader();r.onload=()=>{try{S=Object.assign(structuredClone(defaultState),JSON.parse(r.result));save();toast('復元しました')}catch(e){toast('復元できませんでした')}};r.readAsText(file)}
