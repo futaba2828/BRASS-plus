@@ -34,7 +34,7 @@ async function writeDB(db) {
 const cleanText = (v, max = 200) => String(v ?? '').trim().slice(0, max);
 const normalizeCode = v => cleanText(v, 32).toUpperCase();
 const randomCode = () => crypto.randomBytes(4).toString('hex').toUpperCase().slice(0, 6);
-const emptyData = () => ({ goals: [], practices: [], issues: [], mornings: {}, songs: [], lessons: [], posts: [], recommendations: [], voices: [], tags: [], scaleChecks: {} });
+const emptyData = () => ({ goals: [], practices: [], issues: [], mornings: {}, songs: [], lessons: [], posts: [], recommendations: [], voices: [], tags: [] });
 function newGroup(code, name, owner, clientId = '') {
   return { code, name: cleanText(name, 80) || 'BRASS+グループ', createdAt: new Date().toISOString(), members: [{ name: cleanText(owner, 40) || '未設定', clientId: cleanText(clientId, 100), joinedAt: new Date().toISOString(), profile: null }], data: emptyData() };
 }
@@ -61,11 +61,12 @@ function mergeData(group, incoming) {
   if (Array.isArray(incoming?.tags)) group.data.tags = [...new Set(incoming.tags.map(x => cleanText(x, 40)).filter(Boolean))].slice(0, 200);
   else if (!Array.isArray(group.data.tags)) group.data.tags = [];
   // 朝練は各メンバーの端末内だけで管理し、グループ同期しない。
-  group.data.scaleChecks = { ...(group.data.scaleChecks || {}), ...(incoming?.scaleChecks || {}) };
+  // 音階チェックの達成記録は個人専用のため、サーバーに保存・同期しない。
+  delete group.data.scaleChecks;
   // Myポジション表はサーバーへ保存しない（個人専用）
   delete group.data.mySlides;
 }
-app.get('/api/health', (req, res) => res.json({ ok: true, service: 'BRASS+', version: 'complete-5-leave-fix' }));
+app.get('/api/health', (req, res) => res.json({ ok: true, service: 'BRASS+', version: 'complete-6-leave-list-fix' }));
 app.post('/api/groups', async (req, res) => {
   const db = await readDB();
   let requested = normalizeCode(req.body?.code);
@@ -103,8 +104,11 @@ app.post('/api/groups/:code/leave', async (req, res) => {
   const name = cleanText(req.body?.name, 40) || 'メンバー';
   const clientId = cleanText(req.body?.clientId, 100);
   const before = g.members.length;
-  // Prefer the unique device ID; older member records fall back to the exact profile name.
-  g.members = g.members.filter(m => clientId && m.clientId ? m.clientId !== clientId : m.name !== name);
+  // First remove the exact device record. If the device ID changed (for example after
+  // switching browser contexts), allow the matching name as a compatibility fallback.
+  let matchIndex = clientId ? g.members.findIndex(m => m.clientId && m.clientId === clientId) : -1;
+  if (matchIndex < 0) matchIndex = g.members.findIndex(m => m.name === name);
+  if (matchIndex >= 0) g.members.splice(matchIndex, 1);
   const left = g.members.length < before;
   if (left) addEvent(g, 'member-left', name, `${name}さんが退会しました`, clientId);
   await writeDB(db);
