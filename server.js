@@ -66,7 +66,7 @@ function mergeData(group, incoming) {
   // Myポジション表はサーバーへ保存しない（個人専用）
   delete group.data.mySlides;
 }
-app.get('/api/health', (req, res) => res.json({ ok: true, service: 'BRASS+', version: 'complete-6-leave-list-fix' }));
+app.get('/api/health', (req, res) => res.json({ ok: true, service: 'BRASS+', version: 'complete-7-leave-missing-group-fix' }));
 app.post('/api/groups', async (req, res) => {
   const db = await readDB();
   let requested = normalizeCode(req.body?.code);
@@ -100,7 +100,7 @@ app.post('/api/groups/:code/join', async (req, res) => {
 });
 app.post('/api/groups/:code/leave', async (req, res) => {
   const db = await readDB(); const code = normalizeCode(req.params.code); const g = db.groups[code];
-  if (!g) return res.status(404).json({ error: 'グループが見つかりません' });
+  if (!g) return res.json({ ok: true, left: false, missing: true, members: [] });
   const name = cleanText(req.body?.name, 40) || 'メンバー';
   const clientId = cleanText(req.body?.clientId, 100);
   const before = g.members.length;
