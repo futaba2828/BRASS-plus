@@ -44,21 +44,23 @@ function addEvent(group, type, actor, detail, clientId = '') {
   group.events.push({ id: group.nextEventId, type, actor: cleanText(actor, 40) || 'メンバー', detail: cleanText(detail, 100), clientId: cleanText(clientId, 100), at: new Date().toISOString() });
   group.events = group.events.slice(-150);
 }
-function mergeArray(target, incoming) {
-  const map = new Map((Array.isArray(target) ? target : []).filter(x => x?.id).map(x => [String(x.id), x]));
+function mergeArray(target, incoming, deleted = []) {
+  const blocked = new Set((Array.isArray(deleted) ? deleted : []).map(String));
+  const map = new Map((Array.isArray(target) ? target : []).filter(x => x?.id && !blocked.has(String(x.id))).map(x => [String(x.id), x]));
   for (const x of (Array.isArray(incoming) ? incoming : [])) {
-    if (!x?.id || x.share === 'private') continue;
+    if (!x?.id || x.share === 'private' || blocked.has(String(x.id))) continue;
     map.set(String(x.id), x);
   }
   return [...map.values()].slice(-1000);
 }
 function mergeData(group, incoming) {
   const allowed = ['goals', 'practices', 'issues', 'songs', 'lessons', 'posts', 'recommendations', 'voices'];
-  for (const k of allowed) group.data[k] = mergeArray(group.data[k], incoming?.[k]);
+  group.deletedItems = group.deletedItems || {};
+  for (const k of allowed) group.data[k] = mergeArray(group.data[k], incoming?.[k], group.deletedItems[k]);
   // Tags are strings, not objects with IDs. Treat the submitted list as the full group list so deletions sync too.
   if (Array.isArray(incoming?.tags)) group.data.tags = [...new Set(incoming.tags.map(x => cleanText(x, 40)).filter(Boolean))].slice(0, 200);
   else if (!Array.isArray(group.data.tags)) group.data.tags = [];
-  group.data.mornings = { ...(group.data.mornings || {}), ...(incoming?.mornings || {}) };
+  // 朝練は各メンバーの端末内だけで管理し、グループ同期しない。
   group.data.scaleChecks = { ...(group.data.scaleChecks || {}), ...(incoming?.scaleChecks || {}) };
   // Myポジション表はサーバーへ保存しない（個人専用）
   delete group.data.mySlides;
@@ -88,8 +90,10 @@ app.post('/api/groups/:code/join', async (req, res) => {
   if (!g) return res.status(404).json({ error: 'グループが見つかりません' });
   const name = cleanText(req.body?.name, 40) || '未設定';
   const clientId = cleanText(req.body?.clientId, 100);
-  const wasMember = g.members.some(m => (m.name === name) || (clientId && m.clientId === clientId));
-  if (!wasMember) { g.members.push({ name, clientId, joinedAt: new Date().toISOString(), profile: null }); addEvent(g, 'member-joined', name, `${name}さんが参加しました`, clientId); }
+  let member = clientId ? g.members.find(m => m.clientId === clientId) : null;
+  if (!member) member = g.members.find(m => m.name === name);
+  if (member) { const oldName = member.name; member.name = name; if (clientId) member.clientId = clientId; if (oldName !== name) addEvent(g, 'member-renamed', name, `${oldName}さんが${name}さんに名前を変更しました`, clientId); }
+  else { g.members.push({ name, clientId, joinedAt: new Date().toISOString(), profile: null }); addEvent(g, 'member-joined', name, `${name}さんが参加しました`, clientId); }
   g.members = g.members.slice(-100); await writeDB(db);
   res.json({ ok: true, code: g.code, name: g.name, members: g.members, data: g.data });
 });
@@ -132,15 +136,30 @@ app.get('/api/groups/:code/stream', async (req, res) => {
   }, 1000);
   req.on('close', () => { closed = true; clearInterval(timer); });
 });
+app.post('/api/groups/:code/delete', async (req, res) => {
+  const db = await readDB(); const g = db.groups[normalizeCode(req.params.code)];
+  if (!g) return res.status(404).json({ error: 'グループが見つかりません' });
+  const collection = cleanText(req.body?.collection, 30); const id = cleanText(req.body?.id, 200);
+  if (!['practices', 'issues'].includes(collection) || !id) return res.status(400).json({ error: '削除対象が不正です' });
+  g.deletedItems = g.deletedItems || {}; g.deletedItems[collection] = Array.isArray(g.deletedItems[collection]) ? g.deletedItems[collection] : [];
+  if (!g.deletedItems[collection].includes(id)) g.deletedItems[collection].push(id);
+  g.deletedItems[collection] = g.deletedItems[collection].slice(-5000);
+  g.data[collection] = (Array.isArray(g.data[collection]) ? g.data[collection] : []).filter(x => String(x?.id) !== id);
+  addEvent(g, 'item-deleted', cleanText(req.body?.member, 40), `${collection === 'practices' ? '練習' : '課題点'}を削除しました`, cleanText(req.body?.clientId, 100));
+  await writeDB(db); res.json({ ok: true });
+});
 app.post('/api/groups/:code/sync', async (req, res) => {
   const db = await readDB(); const g = db.groups[normalizeCode(req.params.code)];
   if (!g) return res.status(404).json({ error: 'グループが見つかりません' });
   const name = cleanText(req.body?.member, 40) || '未設定';
-  let member = g.members.find(m => m.name === name);
-  if (!member) { member = { name, joinedAt: new Date().toISOString(), profile: null }; g.members.push(member); }
+  const clientId = cleanText(req.body?.clientId, 100);
+  let member = clientId ? g.members.find(m => m.clientId === clientId) : null;
+  if (!member) member = g.members.find(m => m.name === name);
+  if (!member) { member = { name, clientId, joinedAt: new Date().toISOString(), profile: null }; g.members.push(member); }
+  else { const oldName = member.name; member.name = name; if (clientId) member.clientId = clientId; if (oldName !== name) addEvent(g, 'member-renamed', name, `${oldName}さんが${name}さんに名前を変更しました`, clientId); }
   if (req.body?.profile && typeof req.body.profile === 'object') member.profile = { instrument: cleanText(req.body.profile.instrument, 60), grade: cleanText(req.body.profile.grade, 30), intro: cleanText(req.body.profile.intro, 240), trombonist: cleanText(req.body.profile.trombonist, 100) };
   g.members = g.members.slice(-100);
-  const incoming = req.body?.data || {}; const clientId = req.body?.clientId || '';
+  const incoming = req.body?.data || {};
   const labels = { goals: '目標', practices: '練習', issues: '課題点', songs: '曲', lessons: 'レッスン', posts: '一言投稿', recommendations: 'おすすめ', voices: '音声・記録', tags: 'タグ' };
   for (const key of Object.keys(labels)) {
     const oldList = Array.isArray(g.data?.[key]) ? g.data[key] : [];
