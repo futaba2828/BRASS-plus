@@ -37,6 +37,12 @@ const emptyData = () => ({ goals: [], practices: [], issues: [], mornings: {}, s
 function newGroup(code, name, owner) {
   return { code, name: cleanText(name, 80) || 'BRASS+グループ', createdAt: new Date().toISOString(), members: [{ name: cleanText(owner, 40) || '未設定', joinedAt: new Date().toISOString(), profile: null }], data: emptyData() };
 }
+function addEvent(group, type, actor, detail, clientId = '') {
+  group.events = Array.isArray(group.events) ? group.events : [];
+  group.nextEventId = (Number(group.nextEventId) || 0) + 1;
+  group.events.push({ id: group.nextEventId, type, actor: cleanText(actor, 40) || 'メンバー', detail: cleanText(detail, 100), clientId: cleanText(clientId, 100), at: new Date().toISOString() });
+  group.events = group.events.slice(-150);
+}
 function mergeArray(target, incoming) {
   const map = new Map((Array.isArray(target) ? target : []).filter(x => x?.id).map(x => [String(x.id), x]));
   for (const x of (Array.isArray(incoming) ? incoming : [])) {
@@ -53,7 +59,7 @@ function mergeData(group, incoming) {
   // Myポジション表はサーバーへ保存しない（個人専用）
   delete group.data.mySlides;
 }
-app.get('/api/health', (req, res) => res.json({ ok: true, service: 'BRASS+', version: 'complete-2' }));
+app.get('/api/health', (req, res) => res.json({ ok: true, service: 'BRASS+', version: 'complete-3-realtime' }));
 app.post('/api/groups', async (req, res) => {
   const db = await readDB();
   let requested = normalizeCode(req.body?.code);
@@ -62,6 +68,8 @@ app.post('/api/groups', async (req, res) => {
   let code = requested;
   if (!code) { do { code = randomCode(); } while (db.groups[code]); }
   const g = newGroup(code, req.body?.name, req.body?.owner);
+  g.events = []; g.nextEventId = 0;
+  addEvent(g, 'group-created', req.body?.owner, `「${g.name}」を作成しました`, req.body?.clientId || '');
   db.groups[code] = g;
   await writeDB(db);
   res.json({ ok: true, code: g.code, name: g.name, members: g.members, data: g.data });
@@ -75,9 +83,44 @@ app.post('/api/groups/:code/join', async (req, res) => {
   const db = await readDB(); const g = db.groups[normalizeCode(req.params.code)];
   if (!g) return res.status(404).json({ error: 'グループが見つかりません' });
   const name = cleanText(req.body?.name, 40) || '未設定';
-  if (!g.members.some(m => m.name === name)) g.members.push({ name, joinedAt: new Date().toISOString(), profile: null });
+  const wasMember = g.members.some(m => m.name === name);
+  if (!wasMember) { g.members.push({ name, joinedAt: new Date().toISOString(), profile: null }); addEvent(g, 'member-joined', name, `${name}さんが参加しました`, req.body?.clientId || ''); }
   g.members = g.members.slice(-100); await writeDB(db);
   res.json({ ok: true, code: g.code, name: g.name, members: g.members, data: g.data });
+});
+app.post('/api/groups/:code/leave', async (req, res) => {
+  const db = await readDB(); const code = normalizeCode(req.params.code); const g = db.groups[code];
+  if (!g) return res.status(404).json({ error: 'グループが見つかりません' });
+  const name = cleanText(req.body?.name, 40) || 'メンバー';
+  const before = g.members.length; g.members = g.members.filter(m => m.name !== name);
+  if (g.members.length !== before) addEvent(g, 'member-left', name, `${name}さんが退会しました`, req.body?.clientId || '');
+  await writeDB(db); res.json({ ok: true, members: g.members });
+});
+app.get('/api/groups/:code/events', async (req, res) => {
+  const db = await readDB(); const g = db.groups[normalizeCode(req.params.code)];
+  if (!g) return res.status(404).json({ error: 'グループが見つかりません' });
+  const after = Number(req.query.after) || 0; const clientId = cleanText(req.query.clientId, 100);
+  res.json({ ok: true, events: (g.events || []).filter(e => e.id > after && e.clientId !== clientId), latestId: Number(g.nextEventId) || 0 });
+});
+app.get('/api/groups/:code/stream', async (req, res) => {
+  const code = normalizeCode(req.params.code); const clientId = cleanText(req.query.clientId, 100);
+  const initialDb = await readDB(); if (!initialDb.groups[code]) return res.status(404).end();
+  res.status(200); res.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
+  res.setHeader('Cache-Control', 'no-cache, no-transform'); res.setHeader('Connection', 'keep-alive'); res.flushHeaders?.();
+  let after = Number(req.query.after) || 0; let closed = false; let busy = false;
+  res.write('event: ready\ndata: {}\n\n');
+  const timer = setInterval(async () => {
+    if (closed || busy) return; busy = true;
+    try {
+      const db = await readDB(); const g = db.groups[code];
+      if (!g) { res.write('event: group-missing\ndata: {}\n\n'); clearInterval(timer); res.end(); closed = true; return; }
+      const events = (g.events || []).filter(e => e.id > after);
+      for (const ev of events) { after = Math.max(after, Number(ev.id) || 0); if (ev.clientId !== clientId) res.write(`event: notification\ndata: ${JSON.stringify(ev)}\n\n`); }
+      if (!events.length) res.write(': keepalive\n\n');
+    } catch { /* transient read error; the stream retries on the next tick */ }
+    finally { busy = false; }
+  }, 1000);
+  req.on('close', () => { closed = true; clearInterval(timer); });
 });
 app.post('/api/groups/:code/sync', async (req, res) => {
   const db = await readDB(); const g = db.groups[normalizeCode(req.params.code)];
@@ -86,7 +129,21 @@ app.post('/api/groups/:code/sync', async (req, res) => {
   let member = g.members.find(m => m.name === name);
   if (!member) { member = { name, joinedAt: new Date().toISOString(), profile: null }; g.members.push(member); }
   if (req.body?.profile && typeof req.body.profile === 'object') member.profile = { instrument: cleanText(req.body.profile.instrument, 60), grade: cleanText(req.body.profile.grade, 30), intro: cleanText(req.body.profile.intro, 240), trombonist: cleanText(req.body.profile.trombonist, 100) };
-  g.members = g.members.slice(-100); mergeData(g, req.body?.data || {}); g.updatedAt = new Date().toISOString();
+  g.members = g.members.slice(-100);
+  const incoming = req.body?.data || {}; const clientId = req.body?.clientId || '';
+  const labels = { goals: '目標', practices: '練習', issues: '課題点', songs: '曲', lessons: 'レッスン', posts: '一言投稿', recommendations: 'おすすめ', voices: '音声・記録', tags: 'タグ' };
+  for (const key of Object.keys(labels)) {
+    const oldList = Array.isArray(g.data?.[key]) ? g.data[key] : [];
+    const newList = Array.isArray(incoming[key]) ? incoming[key] : [];
+    const oldMap = new Map(oldList.filter(x => x?.id).map(x => [String(x.id), x]));
+    for (const item of newList) {
+      if (!item?.id || item.share === 'private') continue;
+      const oldItem = oldMap.get(String(item.id));
+      if (!oldItem) addEvent(g, 'item-added', name, `${labels[key]}「${cleanText(item.title || item.text || item.name || '項目', 50)}」を登録しました`, clientId);
+      else if (JSON.stringify(oldItem) !== JSON.stringify(item)) addEvent(g, 'item-updated', name, `${labels[key]}「${cleanText(item.title || item.text || item.name || '項目', 50)}」を変更しました`, clientId);
+    }
+  }
+  mergeData(g, incoming); g.updatedAt = new Date().toISOString();
   await writeDB(db); res.json({ ok: true, data: g.data, members: g.members });
 });
 app.post('/api/analyze', (req, res) => {
