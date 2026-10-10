@@ -1,28 +1,11 @@
-BRASS+ 修正版（退会・一覧削除の改善）
+BRASS+ updated bundle
 
-同梱ファイル
-- index.html : アプリ画面
-- server.js : 共有グループAPI、同期、削除処理
-- package.json : Render用設定
+Files: index.html, server.js, package.json
 
-今回の修正
-- グループ退会処理は端末IDを優先し、IDが変わっている場合は名前での互換検索も行います。
-- サーバーにグループが見つからない場合、退会処理後にこの端末の保存一覧から外せるようにしました。
-- グループ一覧に「一覧から削除」を追加しました。これはこの端末の保存一覧だけを変更し、サーバー上のグループや他メンバーのデータを削除しません。
-- 音階チェック（長音階・短音階）の達成記録は個人端末だけに保存し、サーバーへ同期しません。
-- 朝練記録は共有対象に含めません。朝練王の回数表示は個人の記録を使います。
-- 練習・課題点の削除はサーバー側の削除記録にも反映します。
-- メンバー名の更新は端末IDを優先して同じメンバーを更新します。
-- グループ参加はコード入力を使います。URLパラメータによる自動参加は停止しています。
-- 音階の表示は「音階」、HはB、長音階・短音階を表示します。
+Changes in this build:
+- Morning-practice personal attendance stays local; a per-member attendance total is sent to the group member record so Morning King can rank members.
+- Shared deletion endpoint supports goals, practices, issues, lessons, songs, posts, recommendations and voices, with server tombstones preventing deleted entries from returning on sync.
+- Lesson reflections use the swipe card class and display registrant.
+- Shared practice/issue cards show registrant when available.
 
-更新前にGitHubリポジトリの index.html / server.js / package.json をバックアップしてください。
-ZIP内の3ファイルをリポジトリの同名ファイルに置き換えてデプロイします。
-
-注意：server.js の構文チェックは実施しました。公開サイト上の実動作はまだ確認していません。Renderの保存先設定によっては再起動・再デプロイ時にJSONデータが失われることがあります。既存データを確認してから更新してください。
-
-
-今回の修正（v2）
-- サーバー上にグループコードが存在しない場合、退会APIは「グループなし」として正常応答します。画面側は通常の退会操作の中で、この端末の参加一覧から該当コードを取り除きます。
-- 「一覧から削除」という別機能は追加していません。退会操作だけで処理します。
-- 他のメンバーや、サーバー上に実在するグループのデータは削除しません。
+Before deployment: back up current GitHub files and your server data. Replace index.html and server.js together, commit, and wait for Render to become Live. Browser/device and live multi-member testing has not been performed; older records without registrant may display 未設定. Render's data persistence depends on its storage configuration.

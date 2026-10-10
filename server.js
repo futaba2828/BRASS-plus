@@ -144,12 +144,12 @@ app.post('/api/groups/:code/delete', async (req, res) => {
   const db = await readDB(); const g = db.groups[normalizeCode(req.params.code)];
   if (!g) return res.status(404).json({ error: 'グループが見つかりません' });
   const collection = cleanText(req.body?.collection, 30); const id = cleanText(req.body?.id, 200);
-  if (!['practices', 'issues'].includes(collection) || !id) return res.status(400).json({ error: '削除対象が不正です' });
+  if (!['goals', 'practices', 'issues', 'lessons', 'songs', 'posts', 'recommendations', 'voices'].includes(collection) || !id) return res.status(400).json({ error: '削除対象が不正です' });
   g.deletedItems = g.deletedItems || {}; g.deletedItems[collection] = Array.isArray(g.deletedItems[collection]) ? g.deletedItems[collection] : [];
   if (!g.deletedItems[collection].includes(id)) g.deletedItems[collection].push(id);
   g.deletedItems[collection] = g.deletedItems[collection].slice(-5000);
   g.data[collection] = (Array.isArray(g.data[collection]) ? g.data[collection] : []).filter(x => String(x?.id) !== id);
-  addEvent(g, 'item-deleted', cleanText(req.body?.member, 40), `${collection === 'practices' ? '練習' : '課題点'}を削除しました`, cleanText(req.body?.clientId, 100));
+  addEvent(g, 'item-deleted', cleanText(req.body?.member, 40), `${({goals:'目標',practices:'練習',issues:'課題点',lessons:'レッスン',songs:'曲',posts:'投稿',recommendations:'おすすめ',voices:'音声'}[collection]||'項目')}を削除しました`, cleanText(req.body?.clientId, 100));
   await writeDB(db); res.json({ ok: true });
 });
 app.post('/api/groups/:code/sync', async (req, res) => {
@@ -161,6 +161,7 @@ app.post('/api/groups/:code/sync', async (req, res) => {
   if (!member) member = g.members.find(m => m.name === name);
   if (!member) { member = { name, clientId, joinedAt: new Date().toISOString(), profile: null }; g.members.push(member); }
   else { const oldName = member.name; member.name = name; if (clientId) member.clientId = clientId; if (oldName !== name) addEvent(g, 'member-renamed', name, `${oldName}さんが${name}さんに名前を変更しました`, clientId); }
+  member.morningCount = Math.max(0, Math.floor(Number(req.body?.morningCount) || 0));
   if (req.body?.profile && typeof req.body.profile === 'object') member.profile = { instrument: cleanText(req.body.profile.instrument, 60), grade: cleanText(req.body.profile.grade, 30), intro: cleanText(req.body.profile.intro, 240), trombonist: cleanText(req.body.profile.trombonist, 100) };
   g.members = g.members.slice(-100);
   const incoming = req.body?.data || {};
