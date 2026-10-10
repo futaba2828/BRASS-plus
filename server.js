@@ -68,20 +68,7 @@ app.post('/api/groups', async (req, res) => {
   const db = await readDB();
   let requested = normalizeCode(req.body?.code);
   if (requested && !/^[A-Z0-9]{1,32}$/.test(requested)) return res.status(400).json({ error: 'グループコードは英大文字（A〜Z）と数字（0〜9）のみ、32文字以内で入力してください。' });
-  if (requested && db.groups[requested]) {
-    // If a user submits an existing code from the create form, join that group instead of failing.
-    const existing = db.groups[requested];
-    const owner = cleanText(req.body?.owner, 40) || '未設定';
-    const clientId = cleanText(req.body?.clientId, 100);
-    const wasMember = existing.members.some(m => (clientId && m.clientId === clientId) || m.name === owner);
-    if (!wasMember) {
-      existing.members.push({ name: owner, clientId, joinedAt: new Date().toISOString(), profile: null });
-      existing.members = existing.members.slice(-100);
-      addEvent(existing, 'member-joined', owner, `${owner}さんが参加しました`, clientId);
-      await writeDB(db);
-    }
-    return res.json({ ok: true, code: existing.code, name: existing.name, members: existing.members, data: existing.data, joinedExisting: true });
-  }
+  if (requested && db.groups[requested]) return res.status(409).json({ error: 'すでに存在しています。同じコードは使えません。' });
   let code = requested;
   if (!code) { do { code = randomCode(); } while (db.groups[code]); }
   const g = newGroup(code, req.body?.name, req.body?.owner, req.body?.clientId || '');
@@ -149,13 +136,11 @@ app.post('/api/groups/:code/sync', async (req, res) => {
   const db = await readDB(); const g = db.groups[normalizeCode(req.params.code)];
   if (!g) return res.status(404).json({ error: 'グループが見つかりません' });
   const name = cleanText(req.body?.member, 40) || '未設定';
-  const clientId = cleanText(req.body?.clientId, 100);
-  let member = g.members.find(m => clientId && m.clientId === clientId) || g.members.find(m => m.name === name);
-  if (!member) { member = { name, clientId, joinedAt: new Date().toISOString(), profile: null }; g.members.push(member); }
-  else if (clientId && !member.clientId) member.clientId = clientId;
+  let member = g.members.find(m => m.name === name);
+  if (!member) { member = { name, joinedAt: new Date().toISOString(), profile: null }; g.members.push(member); }
   if (req.body?.profile && typeof req.body.profile === 'object') member.profile = { instrument: cleanText(req.body.profile.instrument, 60), grade: cleanText(req.body.profile.grade, 30), intro: cleanText(req.body.profile.intro, 240), trombonist: cleanText(req.body.profile.trombonist, 100) };
   g.members = g.members.slice(-100);
-  const incoming = req.body?.data || {}; const eventClientId = clientId;
+  const incoming = req.body?.data || {}; const clientId = req.body?.clientId || '';
   const labels = { goals: '目標', practices: '練習', issues: '課題点', songs: '曲', lessons: 'レッスン', posts: '一言投稿', recommendations: 'おすすめ', voices: '音声・記録', tags: 'タグ' };
   for (const key of Object.keys(labels)) {
     const oldList = Array.isArray(g.data?.[key]) ? g.data[key] : [];
@@ -164,8 +149,8 @@ app.post('/api/groups/:code/sync', async (req, res) => {
     for (const item of newList) {
       if (!item?.id || item.share === 'private') continue;
       const oldItem = oldMap.get(String(item.id));
-      if (!oldItem) addEvent(g, 'item-added', name, `${labels[key]}「${cleanText(item.title || item.text || item.name || '項目', 50)}」を登録しました`, eventClientId);
-      else if (JSON.stringify(oldItem) !== JSON.stringify(item)) addEvent(g, 'item-updated', name, `${labels[key]}「${cleanText(item.title || item.text || item.name || '項目', 50)}」を変更しました`, eventClientId);
+      if (!oldItem) addEvent(g, 'item-added', name, `${labels[key]}「${cleanText(item.title || item.text || item.name || '項目', 50)}」を登録しました`, clientId);
+      else if (JSON.stringify(oldItem) !== JSON.stringify(item)) addEvent(g, 'item-updated', name, `${labels[key]}「${cleanText(item.title || item.text || item.name || '項目', 50)}」を変更しました`, clientId);
     }
   }
   mergeData(g, incoming); g.updatedAt = new Date().toISOString();
