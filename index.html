@@ -4,13 +4,14 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <meta name="theme-color" content="#6b8f8a">
+<link rel="apple-touch-icon" href="/apple-touch-icon.png">
 <title>BRASS+</title>
 <style>
 :root{--c:#6b8f8a;--soft:#eef4f2;--soft2:#f7faf9;--text:#263331;--muted:#70807d;--line:#dbe5e2;--danger:#b85c62;--white:#fff}
 *{box-sizing:border-box}html,body{margin:0;min-height:100%;font-family:-apple-system,BlinkMacSystemFont,"Hiragino Sans","Yu Gothic",sans-serif;color:var(--text);background:linear-gradient(135deg,var(--soft2),var(--soft));}
 button,input,textarea,select{font:inherit}button{cursor:pointer}
 #app{min-height:100vh}.top{position:sticky;top:0;z-index:20;background:rgba(255,255,255,.94);backdrop-filter:blur(12px);border-bottom:1px solid var(--line);padding:12px 16px}
-.brand{display:flex;align-items:center;gap:10px}.brand h1{margin:0;font-size:22px;letter-spacing:.06em}.brand small{color:var(--muted)}
+.brand{display:flex;align-items:center;gap:10px}.brand-note{display:grid;place-items:center;width:38px;height:38px;flex:0 0 38px;border-radius:12px;background:var(--c);color:#fff;font-size:25px;line-height:1}.brand h1{margin:0;font-size:22px;letter-spacing:.06em}.brand small{color:var(--muted)}
 .search{margin-top:10px;width:100%;padding:11px 13px;border:1px solid var(--line);border-radius:12px;background:#fff;outline:none}.search:focus{border-color:var(--c);box-shadow:0 0 0 3px var(--soft)}
 nav{display:flex;gap:7px;overflow:auto;padding:10px 12px;background:rgba(255,255,255,.85);border-bottom:1px solid var(--line);position:sticky;top:104px;z-index:19}nav button{white-space:nowrap;border:1px solid var(--line);background:#fff;border-radius:999px;padding:8px 12px;color:var(--muted)}nav button.active{background:var(--c);color:#fff;border-color:var(--c)}nav button.nav-dragging{opacity:.72;transform:scale(1.03);box-shadow:0 5px 14px rgba(0,0,0,.12);touch-action:none;user-select:none}
 main{max-width:980px;margin:auto;padding:18px 14px 90px}.page{display:none}.page.active{display:block}.hero{padding:6px 2px 14px}.hero h2{margin:0 0 4px;font-size:24px}.hero p{margin:0;color:var(--muted)}
@@ -66,7 +67,7 @@ input,textarea,select{width:100%;padding:10px 11px;border:1px solid var(--line);
 <body>
 <div id="app">
 <header class="top">
-  <div class="brand"><div><h1>BRASS+</h1><small id="groupLabel">グループ未設定</small></div><div class="row"><button class="btn small" onclick="openGroups()" aria-label="共有グループ">グループ</button><button class="iconbtn right" onclick="openProfile()" aria-label="設定">⚙</button></div></div>
+  <div class="brand"><span class="brand-note" aria-hidden="true">♫</span><div><h1>BRASS+</h1><small id="groupLabel">グループ未設定</small></div><div class="row"><button class="btn small" onclick="openGroups()" aria-label="共有グループ">グループ</button><button class="iconbtn right" onclick="openProfile()" aria-label="設定">⚙</button></div></div>
   <input id="search" class="search" placeholder="検索" oninput="doSearch(this.value)">
 </header>
 <nav id="nav"></nav>
