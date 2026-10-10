@@ -134,7 +134,7 @@ function renderNav(){
    b.addEventListener('click',e=>{
      e.preventDefault(); e.stopPropagation();
      if(b.dataset.longPressed==='1'){b.dataset.longPressed='0';return;}
-     if(b.dataset.nav==='records'){S.view='records';render();}else{go(b.dataset.nav);}
+     go(b.dataset.nav);
    });
    b.addEventListener('pointerleave',()=>{if(!dragging)clear();});
  });
@@ -327,21 +327,21 @@ function analysis(){
    if(/リズム|テンポ|拍/.test(t))return 'メトロノームを遅めに設定し、手拍子やリズム読みをしてから楽器で練習しましょう。';
    if(/息|ブレス|音が続か|ロングトーン/.test(t))return 'ロングトーンで息の流れを一定にし、自然なブレス位置を確認しましょう。';
    return '入力した課題を短いフレーズに分け、ゆっくり練習してから少しずつテンポを上げましょう。';};
- const resourceSets=[
-  {match:/タンギング|発音|舌/i,items:[['Yamaha｜管楽器の演奏・お手入れガイド','https://www.yamaha.com/en/musical_instrument_guide/'],['YouTube｜トロンボーンのタンギング解説動画','https://www.youtube.com/results?search_query='+encodeURIComponent('トロンボーン タンギング 練習 解説')]]},
-  {match:/音程|ピッチ|チューナー|スライド|ポジション|音階/i,items:[['Trombone｜演奏の基礎を学ぶ','https://www.trombone.org/'],['YouTube｜トロンボーンの音程・ポジション練習','https://www.youtube.com/results?search_query='+encodeURIComponent('トロンボーン 音程 ポジション 練習')]]},
-  {match:/高音|低音|息|ブレス|ロングトーン|音がかすれ/i,items:[['Yamaha｜管楽器の演奏ガイド','https://www.yamaha.com/en/musical_instrument_guide/'],['YouTube｜トロンボーンの音作り・ロングトーン','https://www.youtube.com/results?search_query='+encodeURIComponent('トロンボーン 高音 ロングトーン 練習')]]},
-  {match:/リズム|テンポ|拍/i,items:[['Musicca｜リズム練習','https://www.musicca.com/rhythm'],['YouTube｜吹奏楽 リズム練習','https://www.youtube.com/results?search_query='+encodeURIComponent('吹奏楽 リズム 練習方法')]]}
-];
- const refreshCounts={};
- const searchLinks=(q,key)=>{const query=String(q||'トロンボーン 吹奏楽 練習方法').trim().slice(0,180);const set=resourceSets.find(x=>x.match.test(query))||{items:[['Trombone｜演奏情報・学習リソース','https://www.trombone.org/'],['YouTube｜課題に関連する練習動画','https://www.youtube.com/results?search_query='+encodeURIComponent(query)]]};const list=set.items;const idx=(S.analysisRefs?.[key]||0)%list.length;return `<div class="analysis-links"><a target="_blank" rel="noopener" href="${esc(list[idx][1])}">${esc(list[idx][0])} ↗</a><button type="button" class="btn small" onclick="refreshAnalysisRef('${String(key).replace(/[^a-zA-Z0-9_-]/g,'')}')">参考サイトを更新 ↻</button></div>`;};
-
+ const searchLinks=(q)=>{const query=String(q||'トロンボーン 吹奏楽 練習方法').trim().slice(0,180);const pools=[
+   [{label:'解説サイトを探す',url:'https://www.google.com/search?q='+encodeURIComponent(query+' トロンボーン 解説')},{label:'練習動画を探す',url:'https://www.youtube.com/results?search_query='+encodeURIComponent(query+' トロンボーン レッスン')}],
+   [{label:'別の解説候補を探す',url:'https://www.bing.com/search?q='+encodeURIComponent(query+' トロンボーン 練習')},{label:'別の動画候補を探す',url:'https://www.youtube.com/results?search_query='+encodeURIComponent(query+' 吹奏楽 トロンボーン コツ')}],
+   [{label:'楽器メーカーの解説を探す',url:'https://www.google.com/search?q='+encodeURIComponent(query+' site:yamaha.com トロンボーン')},{label:'演奏レッスン動画を探す',url:'https://www.youtube.com/results?search_query='+encodeURIComponent(query+' brass lesson trombone')}],
+   [{label:'別サイトの解説を探す',url:'https://duckduckgo.com/?q='+encodeURIComponent(query+' トロンボーン 練習方法')},{label:'別の練習動画を探す',url:'https://www.youtube.com/results?search_query='+encodeURIComponent(query+' trombone practice tips')}],
+   [{label:'参考記事を探す',url:'https://www.google.com/search?q='+encodeURIComponent(query+' 吹奏楽 楽器 練習 site:jp')},{label:'レッスン動画を探す',url:'https://www.youtube.com/results?search_query='+encodeURIComponent(query+' trombone tutorial')}],
+   [{label:'新しい解説候補を探す',url:'https://search.yahoo.co.jp/search?p='+encodeURIComponent(query+' トロンボーン')},{label:'新しい動画候補を探す',url:'https://www.youtube.com/results?search_query='+encodeURIComponent(query+' trombone exercise')}]
+ ];const idx=(Number(window.BRASS_REF_ROTATION)||0)%pools.length;return `<div class="analysis-links">${pools[idx].map(a=>`<a target="_blank" rel="noopener" href="${a.url}">${a.label} ↗</a>`).join('')}</div>`;};
  if(!issues.length)return `<div class="analysis"><b>自動分析</b><p class="muted">課題点を登録すると、入力した文字やタグに合わせて練習のヒントと参考サイトがここに自動表示されます。</p></div>`;
- const tagRows=top.length?top.slice(0,8).map(([tag,n])=>`<div style="padding:8px 0;border-top:1px solid var(--line)"><div class="between"><span class="tag selected">${esc(tag)}</span><b>${n}件</b></div><div class="muted">${esc(adviceFor(tag))}</div>${searchLinks('トロンボーン '+tag+' 練習方法','tag'+encodeURIComponent(tag).replace(/%/g,''))}</div>`).join(''):'';
- const issueRows=words.slice(0,12).map(x=>{const q=[x.title,...x.tags,x.detail,x.memo].filter(Boolean).join(' ');return `<div style="padding:8px 0;border-top:1px solid var(--line)"><b>${esc(x.title||x.tags.join('・')||'課題点')}</b><p class="muted">${esc(adviceFor(q))}</p>${searchLinks('トロンボーン '+q+' 練習方法','issue'+encodeURIComponent(x.title||x.tags.join('')).replace(/%/g,'').slice(0,40))}</div>`;}).join('');
- return `<div class="analysis"><b>自動分析</b><p class="muted">課題点を保存・編集すると自動で更新されます。分析ボタンは不要です。</p>${top.length?`<p>多く登録されているタグ：<strong>${esc(top[0][0])}</strong>（${top[0][1]}件）</p>${tagRows}`:''}<h4>入力内容に関連する参考サイト・動画</h4>${issueRows}${!top.length?'<p class="muted">タグがなくても、課題点の入力内容から関連検索を作成します。</p>':''}</div>`;
+ const tagRows=top.length?top.slice(0,8).map(([tag,n])=>`<div style="padding:8px 0;border-top:1px solid var(--line)"><div class="between"><span class="tag selected">${esc(tag)}</span><b>${n}件</b></div><div class="muted">${esc(adviceFor(tag))}</div>${searchLinks('トロンボーン '+tag+' 練習方法')}</div>`).join(''):'';
+ const issueRows=words.slice(0,12).map(x=>{const q=[x.title,...x.tags,x.detail,x.memo].filter(Boolean).join(' ');return `<div style="padding:8px 0;border-top:1px solid var(--line)"><b>${esc(x.title||x.tags.join('・')||'課題点')}</b><p class="muted">${esc(adviceFor(q))}</p>${searchLinks('トロンボーン '+q+' 練習方法')}</div>`;}).join('');
+ return `<div class="analysis"><b>自動分析</b><p class="muted">課題点を保存・編集すると自動で更新されます。分析ボタンは不要です。</p>${top.length?`<p>多く登録されているタグ：<strong>${esc(top[0][0])}</strong>（${top[0][1]}件）</p>${tagRows}`:''}<div class="between"><h4>入力内容に関連する参考サイト・動画</h4><button type="button" class="btn small" onclick="refreshAnalysisSites()">↻ 参考サイトを更新</button></div><p class="muted">押すたびに、異なる検索サービスや絞り込み条件で新しい候補を探します。</p>${issueRows}${!top.length?'<p class="muted">タグがなくても、課題点の入力内容から関連検索を作成します。</p>':''}</div>`;
 }
-function refreshAnalysisRef(key){S.analysisRefs=S.analysisRefs||[];S.analysisRefs[key]=((S.analysisRefs[key]||0)+1);saveLocalOnly();render();toast('参考サイトを更新しました')}
+function refreshAnalysisSites(){window.BRASS_REF_ROTATION=((Number(window.BRASS_REF_ROTATION)||0)+1)%6;render();toast('参考サイトの候補を更新しました')}
+
 function morning(){let y=currentCal.getFullYear(),m=currentCal.getMonth(),days=new Date(y,m+1,0).getDate(),first=new Date(y,m,1).getDay(),cells=[];for(let i=0;i<first;i++)cells.push('<div class="day other"></div>');for(let d=1;d<=days;d++){let ds=`${y}-${String(m+1).padStart(2,'0')}-${String(d).padStart(2,'0')}`, v=S.mornings[ds];cells.push(`<div class="day ${ds===today()?'today':''}" onclick="toggleMorning('${ds}')"><span class="num">${d}</span>${v?'<span class="dot goal1">出席</span>':''}</div>`)}return `<section class="page active"><div class="hero"><h2>朝練</h2><p>火〜金の4日間。過去の日付もタップで取り消し・記録できます。</p></div><div class="card"><div class="between"><button class="btn" onclick="moveCal(-1)">‹</button><b>${y}年${m+1}月</b><button class="btn" onclick="moveCal(1)">›</button></div><div class="calendar" style="margin-top:9px">${['日','月','火','水','木','金','土'].map(x=>`<div class="dow">${x}</div>`).join('')}${cells.join('')}</div><p class="muted">今週：${morningCount()}/4日　${morningCount()===4?'<b>4日達成・表彰対象</b>':'火〜金だけをカウントします。'}</p></div><div class="card"><h3>朝練王</h3>${morningRanking()}</div></section>`}
 function toggleMorning(ds){let day=new Date(ds+'T12:00:00').getDay();if(day===0||day===1||day===6)return toast('朝練は火〜金のみです');if(S.mornings[ds]){delete S.mornings[ds];toast('朝練を取り消しました')}else{S.mornings[ds]={by:S.profile.name||'自分'};toast('朝練を記録しました')}save()}
 function morningCount(){let now=new Date(),start=new Date(now);let day=now.getDay();let diff=day===0?6:day-2;if(diff<0)diff=0;start.setDate(now.getDate()-diff);let n=0;for(let i=0;i<4;i++){let d=new Date(start);d.setDate(start.getDate()+i);let ds=d.toISOString().slice(0,10);if(S.mornings[ds])n++}return n}
