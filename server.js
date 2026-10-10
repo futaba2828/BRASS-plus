@@ -35,8 +35,8 @@ const cleanText = (v, max = 200) => String(v ?? '').trim().slice(0, max);
 const normalizeCode = v => cleanText(v, 32).toUpperCase();
 const randomCode = () => crypto.randomBytes(4).toString('hex').toUpperCase().slice(0, 6);
 const emptyData = () => ({ goals: [], practices: [], issues: [], mornings: {}, songs: [], lessons: [], posts: [], recommendations: [], voices: [], tags: [], scaleChecks: {} });
-function newGroup(code, name, owner) {
-  return { code, name: cleanText(name, 80) || 'BRASS+グループ', createdAt: new Date().toISOString(), members: [{ name: cleanText(owner, 40) || '未設定', joinedAt: new Date().toISOString(), profile: null }], data: emptyData() };
+function newGroup(code, name, owner, clientId = '') {
+  return { code, name: cleanText(name, 80) || 'BRASS+グループ', createdAt: new Date().toISOString(), members: [{ name: cleanText(owner, 40) || '未設定', clientId: cleanText(clientId, 100), joinedAt: new Date().toISOString(), profile: null }], data: emptyData() };
 }
 function addEvent(group, type, actor, detail, clientId = '') {
   group.events = Array.isArray(group.events) ? group.events : [];
@@ -63,7 +63,7 @@ function mergeData(group, incoming) {
   // Myポジション表はサーバーへ保存しない（個人専用）
   delete group.data.mySlides;
 }
-app.get('/api/health', (req, res) => res.json({ ok: true, service: 'BRASS+', version: 'complete-4-group-fix' }));
+app.get('/api/health', (req, res) => res.json({ ok: true, service: 'BRASS+', version: 'complete-5-leave-fix' }));
 app.post('/api/groups', async (req, res) => {
   const db = await readDB();
   let requested = normalizeCode(req.body?.code);
@@ -71,7 +71,7 @@ app.post('/api/groups', async (req, res) => {
   if (requested && db.groups[requested]) return res.status(409).json({ error: 'すでに存在しています。同じコードは使えません。' });
   let code = requested;
   if (!code) { do { code = randomCode(); } while (db.groups[code]); }
-  const g = newGroup(code, req.body?.name, req.body?.owner);
+  const g = newGroup(code, req.body?.name, req.body?.owner, req.body?.clientId || '');
   g.events = []; g.nextEventId = 0;
   addEvent(g, 'group-created', req.body?.owner, `「${g.name}」を作成しました`, req.body?.clientId || '');
   db.groups[code] = g;
@@ -87,8 +87,9 @@ app.post('/api/groups/:code/join', async (req, res) => {
   const db = await readDB(); const g = db.groups[normalizeCode(req.params.code)];
   if (!g) return res.status(404).json({ error: 'グループが見つかりません' });
   const name = cleanText(req.body?.name, 40) || '未設定';
-  const wasMember = g.members.some(m => m.name === name);
-  if (!wasMember) { g.members.push({ name, joinedAt: new Date().toISOString(), profile: null }); addEvent(g, 'member-joined', name, `${name}さんが参加しました`, req.body?.clientId || ''); }
+  const clientId = cleanText(req.body?.clientId, 100);
+  const wasMember = g.members.some(m => (m.name === name) || (clientId && m.clientId === clientId));
+  if (!wasMember) { g.members.push({ name, clientId, joinedAt: new Date().toISOString(), profile: null }); addEvent(g, 'member-joined', name, `${name}さんが参加しました`, clientId); }
   g.members = g.members.slice(-100); await writeDB(db);
   res.json({ ok: true, code: g.code, name: g.name, members: g.members, data: g.data });
 });
@@ -96,9 +97,14 @@ app.post('/api/groups/:code/leave', async (req, res) => {
   const db = await readDB(); const code = normalizeCode(req.params.code); const g = db.groups[code];
   if (!g) return res.status(404).json({ error: 'グループが見つかりません' });
   const name = cleanText(req.body?.name, 40) || 'メンバー';
-  const before = g.members.length; g.members = g.members.filter(m => m.name !== name);
-  if (g.members.length !== before) addEvent(g, 'member-left', name, `${name}さんが退会しました`, req.body?.clientId || '');
-  await writeDB(db); res.json({ ok: true, members: g.members });
+  const clientId = cleanText(req.body?.clientId, 100);
+  const before = g.members.length;
+  // Prefer the unique device ID; older member records fall back to the exact profile name.
+  g.members = g.members.filter(m => clientId && m.clientId ? m.clientId !== clientId : m.name !== name);
+  const left = g.members.length < before;
+  if (left) addEvent(g, 'member-left', name, `${name}さんが退会しました`, clientId);
+  await writeDB(db);
+  res.json({ ok: true, left, members: g.members });
 });
 app.get('/api/groups/:code/events', async (req, res) => {
   const db = await readDB(); const g = db.groups[normalizeCode(req.params.code)];
