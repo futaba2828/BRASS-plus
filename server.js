@@ -18,7 +18,8 @@ app.use((req, res, next) => {
   if (req.method === 'OPTIONS') return res.sendStatus(204);
   next();
 });
-app.use(express.static(__dirname));
+app.use(express.static(__dirname, { index: false, setHeaders(res, filePath) { if (filePath.endsWith('.html')) { res.setHeader('Cache-Control', 'no-store, max-age=0'); res.setHeader('Content-Type', 'text/html; charset=utf-8'); } } }));
+app.get('/', (req, res) => { res.setHeader('Cache-Control', 'no-store, max-age=0'); res.type('html').sendFile(path.join(__dirname, 'index.html')); });
 
 async function readDB() {
   try { return JSON.parse(await fs.readFile(DATA_FILE, 'utf8')); }
@@ -52,14 +53,17 @@ function mergeArray(target, incoming) {
   return [...map.values()].slice(-1000);
 }
 function mergeData(group, incoming) {
-  const allowed = ['goals', 'practices', 'issues', 'songs', 'lessons', 'posts', 'recommendations', 'voices', 'tags'];
+  const allowed = ['goals', 'practices', 'issues', 'songs', 'lessons', 'posts', 'recommendations', 'voices'];
   for (const k of allowed) group.data[k] = mergeArray(group.data[k], incoming?.[k]);
+  // Tags are strings, not objects with IDs. Treat the submitted list as the full group list so deletions sync too.
+  if (Array.isArray(incoming?.tags)) group.data.tags = [...new Set(incoming.tags.map(x => cleanText(x, 40)).filter(Boolean))].slice(0, 200);
+  else if (!Array.isArray(group.data.tags)) group.data.tags = [];
   group.data.mornings = { ...(group.data.mornings || {}), ...(incoming?.mornings || {}) };
   group.data.scaleChecks = { ...(group.data.scaleChecks || {}), ...(incoming?.scaleChecks || {}) };
   // Myポジション表はサーバーへ保存しない（個人専用）
   delete group.data.mySlides;
 }
-app.get('/api/health', (req, res) => res.json({ ok: true, service: 'BRASS+', version: 'complete-3-realtime' }));
+app.get('/api/health', (req, res) => res.json({ ok: true, service: 'BRASS+', version: 'complete-4-group-fix' }));
 app.post('/api/groups', async (req, res) => {
   const db = await readDB();
   let requested = normalizeCode(req.body?.code);
