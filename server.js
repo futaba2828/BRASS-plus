@@ -79,12 +79,12 @@ app.post('/api/groups', async (req, res) => {
   addEvent(g, 'group-created', req.body?.owner, `「${g.name}」を作成しました`, req.body?.clientId || '');
   db.groups[code] = g;
   await writeDB(db);
-  res.json({ ok: true, code: g.code, name: g.name, members: g.members, data: g.data });
+  res.json({ ok: true, code: g.code, name: g.name, members: g.members, data: g.data, deletedItems: g.deletedItems || {} });
 });
 app.get('/api/groups/:code', async (req, res) => {
   const db = await readDB(); const g = db.groups[normalizeCode(req.params.code)];
   if (!g) return res.status(404).json({ error: 'グループが見つかりません' });
-  res.json({ ok: true, code: g.code, name: g.name, members: g.members, data: g.data });
+  res.json({ ok: true, code: g.code, name: g.name, members: g.members, data: g.data, deletedItems: g.deletedItems || {} });
 });
 app.post('/api/groups/:code/join', async (req, res) => {
   const db = await readDB(); const g = db.groups[normalizeCode(req.params.code)];
@@ -96,7 +96,7 @@ app.post('/api/groups/:code/join', async (req, res) => {
   if (member) { const oldName = member.name; member.name = name; if (clientId) member.clientId = clientId; if (oldName !== name) addEvent(g, 'member-renamed', name, `${oldName}さんが${name}さんに名前を変更しました`, clientId); }
   else { g.members.push({ name, clientId, joinedAt: new Date().toISOString(), profile: null }); addEvent(g, 'member-joined', name, `${name}さんが参加しました`, clientId); }
   g.members = g.members.slice(-100); await writeDB(db);
-  res.json({ ok: true, code: g.code, name: g.name, members: g.members, data: g.data });
+  res.json({ ok: true, code: g.code, name: g.name, members: g.members, data: g.data, deletedItems: g.deletedItems || {} });
 });
 app.post('/api/groups/:code/leave', async (req, res) => {
   const db = await readDB(); const code = normalizeCode(req.params.code); const g = db.groups[code];
