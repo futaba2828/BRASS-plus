@@ -161,7 +161,15 @@ app.post('/api/groups/:code/sync', async (req, res) => {
   if (!member) member = g.members.find(m => m.name === name);
   if (!member) { member = { name, clientId, joinedAt: new Date().toISOString(), profile: null }; g.members.push(member); }
   else { const oldName = member.name; member.name = name; if (clientId) member.clientId = clientId; if (oldName !== name) addEvent(g, 'member-renamed', name, `${oldName}さんが${name}さんに名前を変更しました`, clientId); }
-  member.morningCount = Math.max(0, Math.floor(Number(req.body?.morningCount) || 0));
+  const incomingMorningDates = Array.isArray(req.body?.morningDates) ? req.body.morningDates.filter(x => /^\\d{4}-\\d{2}-\\d{2}$/.test(String(x))).slice(-5000) : null;
+  if (incomingMorningDates) {
+    member.morningDates = [...new Set(incomingMorningDates)].sort();
+    member.morningTotalCount = member.morningDates.length;
+    member.morningCount = Math.max(0, Math.floor(Number(req.body?.morningCount) || 0));
+  } else {
+    member.morningCount = Math.max(0, Math.floor(Number(req.body?.morningCount) || 0));
+    member.morningTotalCount = Math.max(Number(member.morningTotalCount) || 0, member.morningCount);
+  }
   if (req.body?.profile && typeof req.body.profile === 'object') member.profile = { instrument: cleanText(req.body.profile.instrument, 60), grade: cleanText(req.body.profile.grade, 30), intro: cleanText(req.body.profile.intro, 240), trombonist: cleanText(req.body.profile.trombonist, 100) };
   g.members = g.members.slice(-100);
   const incoming = req.body?.data || {};
