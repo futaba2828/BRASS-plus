@@ -1,11 +1,14 @@
-BRASS+ updated bundle
+BRASS+ 修正版候補
 
-Files: index.html, server.js, package.json
+含まれるファイル: index.html / server.js / package.json
 
-Changes in this build:
-- Morning-practice personal attendance stays local; a per-member attendance total is sent to the group member record so Morning King can rank members.
-- Shared deletion endpoint supports goals, practices, issues, lessons, songs, posts, recommendations and voices, with server tombstones preventing deleted entries from returning on sync.
-- Lesson reflections use the swipe card class and display registrant.
-- Shared practice/issue cards show registrant when available.
+今回の修正候補:
+- 重複定義されていた goalMini / practiceMini / issueMini を1つに整理
+- 練習・課題点の完了状態をメンバー名別で管理し、同期時も他メンバーの完了状態を保持
+- SUPABASE_URL と SUPABASE_SECRET_KEY が設定されていれば Supabase の public.brass_groups テーブルへ永続保存
+- Supabase環境変数がない場合は従来どおりJSONファイル保存
 
-Before deployment: back up current GitHub files and your server data. Replace index.html and server.js together, commit, and wait for Render to become Live. Browser/device and live multi-member testing has not been performed; older records without registrant may display 未設定. Render's data persistence depends on its storage configuration.
+注意:
+- 実際のRender/Supabaseへデプロイしての複数端末テストは未実施です。
+- Supabase側は public.brass_groups (code text primary key, group_data jsonb, updated_at timestamptz) が必要です。
+- このZIPをGitHubへ上書きする前に、既存の動作とデータを確認してください。
