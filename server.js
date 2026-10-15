@@ -21,31 +21,39 @@ app.use((req, res, next) => {
 app.use(express.static(__dirname, { index: false, setHeaders(res, filePath) { if (filePath.endsWith('.html')) { res.setHeader('Cache-Control', 'no-store, max-age=0'); res.setHeader('Content-Type', 'text/html; charset=utf-8'); } } }));
 app.get('/', (req, res) => { res.setHeader('Cache-Control', 'no-store, max-age=0'); res.type('html').sendFile(path.join(__dirname, 'index.html')); });
 
-const supabaseReady = () => !!(process.env.SUPABASE_URL && process.env.SUPABASE_SECRET_KEY);
-async function supabaseRequest(path, options = {}) {
-  const base = process.env.SUPABASE_URL.replace(/\/$/, '');
-  const key = process.env.SUPABASE_SECRET_KEY;
-  const response = await fetch(`${base}/rest/v1/${path}`, { ...options, headers: { apikey: key, Authorization: `Bearer ${key}`, 'Content-Type': 'application/json', ...(options.headers || {}) } });
-  if (!response.ok) throw new Error(`Supabase ${response.status}: ${(await response.text()).slice(0, 300)}`);
+function supabaseConfig() {
+  const url = String(process.env.SUPABASE_URL || '').replace(/\/+$/, '');
+  const key = String(process.env.SUPABASE_SECRET_KEY || process.env.SUPABASE_SERVICE_ROLE_KEY || '');
+  return url && key ? { url, key } : null;
+}
+async function supabaseRequest(pathname, options = {}) {
+  const cfg = supabaseConfig();
+  if (!cfg) throw new Error('Supabase環境変数が設定されていません');
+  const response = await fetch(`${cfg.url}/rest/v1/${pathname}`, {
+    ...options,
+    headers: { apikey: cfg.key, Authorization: `Bearer ${cfg.key}`, 'Content-Type': 'application/json', Prefer: 'resolution=merge-duplicates,return=minimal', ...(options.headers || {}) }
+  });
+  if (!response.ok) throw new Error(`Supabase HTTP ${response.status}: ${(await response.text()).slice(0, 300)}`);
   return response.status === 204 ? null : response.json().catch(() => null);
 }
 async function readDB() {
-  if (supabaseReady()) {
+  if (supabaseConfig()) {
     const rows = await supabaseRequest('brass_groups?select=code,group_data');
     const groups = {};
-    for (const row of (Array.isArray(rows) ? rows : [])) if (row?.code && row?.group_data) groups[row.code] = row.group_data;
+    for (const row of (Array.isArray(rows) ? rows : [])) {
+      const code = normalizeCode(row.code);
+      if (code && row.group_data && typeof row.group_data === 'object') groups[code] = row.group_data;
+    }
     return { groups };
   }
   try { return JSON.parse(await fs.readFile(DATA_FILE, 'utf8')); }
   catch { return { groups: {} }; }
 }
 async function writeDB(db) {
-  if (supabaseReady()) {
-    const existing = await supabaseRequest('brass_groups?select=code');
-    const wanted = new Set(Object.keys(db.groups || {}));
-    const rows = Object.entries(db.groups || {}).map(([code, group_data]) => ({ code, group_data, updated_at: new Date().toISOString() }));
-    if (rows.length) await supabaseRequest('brass_groups?on_conflict=code', { method: 'POST', headers: { Prefer: 'resolution=merge-duplicates,return=minimal' }, body: JSON.stringify(rows) });
-    for (const row of (Array.isArray(existing) ? existing : [])) if (row?.code && !wanted.has(row.code)) await supabaseRequest(`brass_groups?code=eq.${encodeURIComponent(row.code)}`, { method: 'DELETE', headers: { Prefer: 'return=minimal' } });
+  if (supabaseConfig()) {
+    const rows = Object.entries(db.groups || {}).map(([code, group]) => ({ code, group_data: group, updated_at: new Date().toISOString() }));
+    // Upsert groups individually to avoid oversized requests; a Supabase error is surfaced, never silently saved locally.
+    for (const row of rows) await supabaseRequest('brass_groups?on_conflict=code', { method: 'POST', body: JSON.stringify(row) });
     return;
   }
   await fs.mkdir(DATA_DIR, { recursive: true });
@@ -71,9 +79,7 @@ function mergeArray(target, incoming, deleted = []) {
   const map = new Map((Array.isArray(target) ? target : []).filter(x => x?.id && !blocked.has(String(x.id))).map(x => [String(x.id), x]));
   for (const x of (Array.isArray(incoming) ? incoming : [])) {
     if (!x?.id || x.share === 'private' || blocked.has(String(x.id))) continue;
-    const prior = map.get(String(x.id));
-    const merged = { ...(prior || {}), ...x, doneByMember: { ...((prior && prior.doneByMember) || {}), ...(x.doneByMember || {}) } };
-    map.set(String(x.id), merged);
+    map.set(String(x.id), x);
   }
   return [...map.values()].slice(-1000);
 }
@@ -90,7 +96,7 @@ function mergeData(group, incoming) {
   // Myポジション表はサーバーへ保存しない（個人専用）
   delete group.data.mySlides;
 }
-app.get('/api/health', (req, res) => res.json({ ok: true, service: 'BRASS+', version: 'complete-8-supabase-personal-completion-fix' }));
+app.get('/api/health', (req, res) => res.json({ ok: true, service: 'BRASS+', version: 'supabase-storage-v1' }));
 app.post('/api/groups', async (req, res) => {
   const db = await readDB();
   let requested = normalizeCode(req.body?.code);
