@@ -1,14 +1,33 @@
-BRASS+ 修正版候補
+BRASS+ 修正版候補 — アカウント同期・メンバー表示
 
-含まれるファイル: index.html / server.js / package.json
+内容
+- グループメンバー一覧で、自分の名前に「（自分）」を表示する
+- アカウント名・パスワードでログインし、LINE内ブラウザ／Safari／ホーム画面で同じアカウントを使えるようにする
+- プロフィール、テーマカラー、個人専用の音階記録・Myポジション表・朝練記録、タブ設定、参加グループ一覧をアカウントに保存する
+- 同じアカウントでログインした端末は、グループメンバー上も同一メンバーIDを使う
 
-今回の修正候補:
-- 重複定義されていた goalMini / practiceMini / issueMini を1つに整理
-- 練習・課題点の完了状態をメンバー名別で管理し、同期時も他メンバーの完了状態を保持
-- SUPABASE_URL と SUPABASE_SECRET_KEY が設定されていれば Supabase の public.brass_groups テーブルへ永続保存
-- Supabase環境変数がない場合は従来どおりJSONファイル保存
+重要：このZIPは保存されていた2026-10-16の旧版を土台にした候補版で、現在のGitHub最新版とは未照合です。GitHubに上書きする前に必ずバックアップを取り、ステージングで動作確認してください。
 
-注意:
-- 実際のRender/Supabaseへデプロイしての複数端末テストは未実施です。
-- Supabase側は public.brass_groups (code text primary key, group_data jsonb, updated_at timestamptz) が必要です。
-- このZIPをGitHubへ上書きする前に、既存の動作とデータを確認してください。
+導入手順
+1. Supabase SQL Editorで SUPABASE_SETUP.sql の内容を実行（既存テーブルを削除するSQLはありません）。
+2. RenderのEnvironmentに BRASS_ACCOUNT_SIGN_KEY を追加し、長くランダムな値を設定してください。値は他人に共有しないでください。既存のSUPABASE_SECRET_KEYは変更しないでください。
+3. このフォルダーの server.js / index.html / package.json をRenderのデプロイ元へ反映し、デプロイ後に /api/health が正常か確認してください。
+4. アプリを開き、設定（⚙）→「アカウント同期」で新規アカウントを一度だけ作成。別ブラウザでは「ログイン」を使います。
+
+注意
+- アカウント作成にはSupabaseの brass_accounts テーブルとRender側の環境変数が必要です。
+- パスワードを忘れると、現状は自動リセット機能がありません。安全な場所に保管してください。
+- ZIPのコードは現行本番データに対してまだ実地テストされていません。いきなり本番へ上書きせず、データをバックアップしてから使ってください。
+
+
+【テーマカラーとホーム画面アイコンについて】
+テーマカラー変更時、ブラウザのアイコン・Apple touch icon・Web App Manifestを新しい色で作り直します。別ブラウザで同じアカウントにログインしている場合、起動時・ブラウザに戻った時にテーマカラーを再取得します。
+iPhone/iPadのiOSでは、ホーム画面に追加済みのWebアプリのアイコン画像はOS側に保存され、Webページから既存アイコンを強制更新する仕組みがありません。そのため、色を変えた後にホーム画面アイコンにも反映させるには、いったんホーム画面のBRASS+を削除して、Safariから再度「ホーム画面に追加」する必要があります。AndroidなどManifestアイコンを再取得する環境でも、OS側のキャッシュにより反映が遅れることがあります。
+
+
+【アカウント設定・パスワード再設定】
+1. SupabaseのSQL Editorで、同梱のSUPABASE_SETUP.sqlを実行してください（既存のbrass_accountsにメール・再設定用列を追加します）。
+2. RenderのEnvironmentにメール送信設定を追加してください。SMTP_HOST、SMTP_PORT（通常587）、SMTP_SECURE（通常false）、SMTP_USER、SMTP_PASS、SMTP_FROM、BRASS_PUBLIC_URL（例：https://futaba2828.github.io/BRASS-plus/）。SMTP_PASSはメールサービスのアプリ用パスワード等を使い、チャットには貼らないでください。
+3. Renderで再デプロイしてください。
+
+新規登録ではユーザー名・パスワード・再設定用メールアドレスが必要です。ユーザー名／パスワード変更はログイン後のプロフィール・設定から行えます。パスワード再設定メールは30分有効です。SMTPを設定しない場合、登録とログインは使えても再設定メールは送信できません。

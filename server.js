@@ -2,6 +2,7 @@ import express from 'express';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import crypto from 'node:crypto';
+import nodemailer from 'nodemailer';
 import { fileURLToPath } from 'node:url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -13,8 +14,8 @@ app.use(express.json({ limit: process.env.BRASS_MAX_BODY || '15mb' }));
 app.use(express.urlencoded({ extended: false, limit: '1mb' }));
 app.use((req, res, next) => {
   res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
-  res.setHeader('Access-Control-Allow-Methods', 'GET,POST,OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+  res.setHeader('Access-Control-Allow-Methods', 'GET,POST,PUT,OPTIONS');
   if (req.method === 'OPTIONS') return res.sendStatus(204);
   next();
 });
@@ -136,6 +137,116 @@ app.get('/api/health', async (req, res) => {
     return res.status(503).json({ ...result, ok: false, error: 'Supabaseに接続できません。テーブル名・列名・キー設定を確認してください。' });
   }
 });
+
+// Cross-browser BRASS+ accounts. Passwords are salted and hashed; the signing key stays on Render.
+const ACCOUNT_SIGN_KEY = process.env.BRASS_ACCOUNT_SIGN_KEY || SUPABASE_KEY;
+function accountToken(account) {
+  const payload = Buffer.from(JSON.stringify({ id: account.id, exp: Date.now() + 1000*60*60*24*30 })).toString('base64url');
+  const sig = crypto.createHmac('sha256', ACCOUNT_SIGN_KEY || 'configure-a-long-random-secret-in-render').update(payload).digest('base64url');
+  return payload + '.' + sig;
+}
+function accountFromRequest(req) {
+  if (!ACCOUNT_SIGN_KEY) return null;
+  const token = String(req.headers.authorization || '').replace(/^Bearer\s+/i, '');
+  const [payload, sig] = token.split('.'); if (!payload || !sig) return null;
+  const expected = crypto.createHmac('sha256', ACCOUNT_SIGN_KEY).update(payload).digest();
+  let supplied; try { supplied = Buffer.from(sig, 'base64url'); } catch { return null; }
+  if (expected.length !== supplied.length || !crypto.timingSafeEqual(expected, supplied)) return null;
+  try { const data = JSON.parse(Buffer.from(payload, 'base64url').toString()); return data.exp > Date.now() ? data.id : null; } catch { return null; }
+}
+function hashPassword(password, salt = crypto.randomBytes(16).toString('hex')) {
+  return { salt, hash: crypto.scryptSync(password, salt, 64).toString('hex') };
+}
+async function accountRequest(pathname, options = {}) {
+  return await supabaseRequest(pathname, options);
+}
+function emailTransport() {
+  const host=process.env.SMTP_HOST, user=process.env.SMTP_USER, pass=process.env.SMTP_PASS;
+  if(!host||!user||!pass) return null;
+  return nodemailer.createTransport({host,port:Number(process.env.SMTP_PORT||587),secure:String(process.env.SMTP_SECURE||'false')==='true',auth:{user,pass}});
+}
+const validEmail = v => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(v||'')) && String(v).length<=254;
+app.post('/api/account/register', async (req, res) => {
+  try {
+    if (!hasSupabase || !ACCOUNT_SIGN_KEY) return res.status(503).json({ error: 'アカウント機能にはSupabaseとRenderの設定が必要です。' });
+    const username = cleanText(req.body?.username, 32);
+    const password = String(req.body?.password || '');
+    const email = cleanText(req.body?.email,254).toLowerCase();
+    if (!validEmail(email)) return res.status(400).json({error:'パスワード再設定用のメールアドレスを入力してください。'});
+    if (!/^[A-Za-z0-9ぁ-んァ-ヶ一-龠ー_-]{2,32}$/.test(username)) return res.status(400).json({ error: 'アカウント名は2〜32文字で入力してください。' });
+    if (password.length < 8 || password.length > 128) return res.status(400).json({ error: 'パスワードは8〜128文字にしてください。' });
+    const existing = await accountRequest('brass_accounts?select=id&username=ilike.' + encodeURIComponent(username) + '&limit=1');
+    if (existing?.length) return res.status(409).json({ error: 'そのアカウント名は使用されています。別の名前にしてください。' });
+    const pw = hashPassword(password);
+    const rows = await accountRequest('brass_accounts', { method:'POST', headers:{ Prefer:'return=representation' }, body:JSON.stringify({ username, email, password_salt:pw.salt, password_hash:pw.hash, account_data:{} }) });
+    const account = rows?.[0]; if (!account) throw new Error('account create failed');
+    return res.json({ ok:true, token:accountToken(account), account:{id:account.id, username:account.username, email:account.email}, data:account.account_data || {} });
+  } catch (e) { console.error('[BRASS+ account register]', e?.message || e); return res.status(503).json({ error: /duplicate key|unique/i.test(e?.message||'') ? 'そのアカウント名は使用されています。' : 'アカウントを作成できませんでした。Supabaseの設定とテーブルを確認してください。' }); }
+});
+app.post('/api/account/login', async (req, res) => {
+  try {
+    if (!hasSupabase || !ACCOUNT_SIGN_KEY) return res.status(503).json({ error: 'アカウント機能にはSupabaseとRenderの設定が必要です。' });
+    const username = cleanText(req.body?.username, 32), password = String(req.body?.password || '');
+    const rows = await accountRequest('brass_accounts?select=id,username,email,password_salt,password_hash,account_data&username=ilike.' + encodeURIComponent(username) + '&limit=1');
+    const a = rows?.[0]; if (!a || !crypto.timingSafeEqual(Buffer.from(hashPassword(password,a.password_salt).hash,'hex'), Buffer.from(a.password_hash,'hex'))) return res.status(401).json({ error:'アカウント名またはパスワードが違います。' });
+    return res.json({ ok:true, token:accountToken(a), account:{id:a.id, username:a.username, email:a.email}, data:a.account_data || {} });
+  } catch (e) { console.error('[BRASS+ account login]', e?.message || e); return res.status(503).json({ error:'ログインできませんでした。通信とSupabaseの設定を確認してください。' }); }
+});
+app.post('/api/account/username', async (req,res) => {
+  try {
+    const id=accountFromRequest(req); if(!id)return res.status(401).json({error:'ログインし直してください。'});
+    const username=cleanText(req.body?.username,32), password=String(req.body?.password||'');
+    if(!/^[A-Za-z0-9ぁ-んァ-ヶ一-龠ー_-]{2,32}$/.test(username))return res.status(400).json({error:'ユーザー名は2〜32文字で入力してください。'});
+    const rows=await accountRequest('brass_accounts?select=id,username,password_salt,password_hash&id=eq.'+encodeURIComponent(id)+'&limit=1'); const a=rows?.[0];
+    if(!a||!crypto.timingSafeEqual(Buffer.from(hashPassword(password,a.password_salt).hash,'hex'),Buffer.from(a.password_hash,'hex')))return res.status(401).json({error:'現在のパスワードが違います。'});
+    const existing=await accountRequest('brass_accounts?select=id&username=ilike.'+encodeURIComponent(username)+'&limit=1'); if(existing?.some(x=>x.id!==id))return res.status(409).json({error:'そのユーザー名は使用されています。'});
+    await accountRequest('brass_accounts?id=eq.'+encodeURIComponent(id),{method:'PATCH',headers:{Prefer:'return=minimal'},body:JSON.stringify({username,updated_at:new Date().toISOString()})});
+    res.json({ok:true,account:{id,username}});
+  } catch(e){console.error('[account username]',e?.message||e);res.status(503).json({error:'ユーザー名を変更できませんでした。'});}
+});
+app.post('/api/account/password', async (req,res) => {
+  try {
+    const id=accountFromRequest(req); if(!id)return res.status(401).json({error:'ログインし直してください。'});
+    const current=String(req.body?.currentPassword||''), next=String(req.body?.newPassword||'');
+    if(next.length<8||next.length>128)return res.status(400).json({error:'新しいパスワードは8〜128文字にしてください。'});
+    const rows=await accountRequest('brass_accounts?select=password_salt,password_hash&id=eq.'+encodeURIComponent(id)+'&limit=1');const a=rows?.[0];
+    if(!a||!crypto.timingSafeEqual(Buffer.from(hashPassword(current,a.password_salt).hash,'hex'),Buffer.from(a.password_hash,'hex')))return res.status(401).json({error:'現在のパスワードが違います。'});
+    const pw=hashPassword(next);await accountRequest('brass_accounts?id=eq.'+encodeURIComponent(id),{method:'PATCH',headers:{Prefer:'return=minimal'},body:JSON.stringify({password_salt:pw.salt,password_hash:pw.hash,updated_at:new Date().toISOString()})});
+    res.json({ok:true});
+  }catch(e){console.error('[account password]',e?.message||e);res.status(503).json({error:'パスワードを変更できませんでした。'});}
+});
+app.post('/api/account/forgot', async (req,res) => {
+  try {
+    const email=cleanText(req.body?.email,254).toLowerCase(); if(!validEmail(email))return res.status(400).json({error:'登録したメールアドレスを入力してください。'});
+    const mailer=emailTransport(); if(!mailer)return res.status(503).json({error:'パスワード再設定メールの送信設定がまだ完了していません。'});
+    const rows=await accountRequest('brass_accounts?select=id,username,email&email=ilike.'+encodeURIComponent(email)+'&limit=1'); const a=rows?.[0];
+    // Always return a generic message to avoid revealing whether an account exists.
+    if(a){const raw=crypto.randomBytes(32).toString('hex'), tokenHash=crypto.createHash('sha256').update(raw).digest('hex');
+      await accountRequest('brass_accounts?id=eq.'+encodeURIComponent(a.id),{method:'PATCH',headers:{Prefer:'return=minimal'},body:JSON.stringify({reset_token_hash:tokenHash,reset_expires_at:new Date(Date.now()+30*60*1000).toISOString()})});
+      const base=String(process.env.BRASS_PUBLIC_URL||'https://futaba2828.github.io/BRASS-plus/');
+      await mailer.sendMail({from:process.env.SMTP_FROM||process.env.SMTP_USER,to:a.email,subject:'BRASS+ パスワード再設定',text:`${a.username} さん\n\n次のリンクから30分以内にパスワードを再設定してください。\n${base}${base.includes('?')?'&':'?'}resetToken=${raw}\n\n心当たりがない場合は、このメールを無視してください。`});
+    }
+    res.json({ok:true,message:'登録メールアドレスに該当するアカウントがあれば、再設定メールを送信しました。'});
+  }catch(e){console.error('[account forgot]',e?.message||e);res.status(503).json({error:'再設定メールを送信できませんでした。設定を確認してください。'});}
+});
+app.post('/api/account/reset', async (req,res) => {
+  try {
+    const token=String(req.body?.token||''), password=String(req.body?.password||''); if(token.length<32)return res.status(400).json({error:'再設定リンクが正しくありません。'}); if(password.length<8||password.length>128)return res.status(400).json({error:'新しいパスワードは8〜128文字にしてください。'});
+    const hash=crypto.createHash('sha256').update(token).digest('hex'); const rows=await accountRequest('brass_accounts?select=id&reset_token_hash=eq.'+encodeURIComponent(hash)+'&limit=1');const a=rows?.[0];
+    if(!a)return res.status(400).json({error:'再設定リンクが無効か、すでに使用されています。'});
+    const chk=await accountRequest('brass_accounts?select=reset_expires_at&id=eq.'+encodeURIComponent(a.id)+'&limit=1');if(!chk?.[0]?.reset_expires_at||new Date(chk[0].reset_expires_at).getTime()<Date.now())return res.status(400).json({error:'再設定リンクの有効期限が切れています。もう一度申請してください。'});
+    const pw=hashPassword(password);await accountRequest('brass_accounts?id=eq.'+encodeURIComponent(a.id),{method:'PATCH',headers:{Prefer:'return=minimal'},body:JSON.stringify({password_salt:pw.salt,password_hash:pw.hash,reset_token_hash:null,reset_expires_at:null,updated_at:new Date().toISOString()})});res.json({ok:true});
+  }catch(e){console.error('[account reset]',e?.message||e);res.status(503).json({error:'パスワードを再設定できませんでした。'});}
+});
+app.get('/api/account/data', async (req,res) => {
+  try { const id=accountFromRequest(req); if(!id)return res.status(401).json({error:'ログインし直してください。'}); const rows=await accountRequest('brass_accounts?select=username,email,account_data&id=eq.'+encodeURIComponent(id)+'&limit=1'); if(!rows?.[0])return res.status(404).json({error:'アカウントが見つかりません。'}); res.json({ok:true,account:{id,username:rows[0].username,email:rows[0].email},data:rows[0].account_data||{}}); }
+  catch(e){console.error('[BRASS+ account data get]',e?.message||e);res.status(503).json({error:'アカウントデータを読み込めませんでした。'});}
+});
+app.put('/api/account/data', async (req,res) => {
+  try { const id=accountFromRequest(req); if(!id)return res.status(401).json({error:'ログインし直してください。'}); const data=req.body?.data; if(!data || typeof data!=='object')return res.status(400).json({error:'保存データが不正です。'}); const safe={ profile:data.profile||{}, scaleChecks:data.scaleChecks||{}, mySlides:Array.isArray(data.mySlides)?data.mySlides:[], mornings:data.mornings||{}, sectionPrefs:data.sectionPrefs||{}, navOrder:Array.isArray(data.navOrder)?data.navOrder:[], groups:Array.isArray(data.groups)?data.groups.filter(x=>typeof x==='string').slice(0,100):[], privateData:data.privateData&&typeof data.privateData==='object'?data.privateData:{} }; await accountRequest('brass_accounts?id=eq.'+encodeURIComponent(id),{method:'PATCH',headers:{Prefer:'return=minimal'},body:JSON.stringify({account_data:safe,updated_at:new Date().toISOString()})}); res.json({ok:true}); }
+  catch(e){console.error('[BRASS+ account data put]',e?.message||e);res.status(503).json({error:'アカウントデータを保存できませんでした。'});}
+});
+
 app.post('/api/groups', async (req, res) => {
   const db = await readDB();
   let requested = normalizeCode(req.body?.code);
