@@ -123,7 +123,19 @@ function mergeData(group, incoming) {
   // Myポジション表はサーバーへ保存しない（個人専用）
   delete group.data.mySlides;
 }
-app.get('/api/health', (req, res) => res.json({ ok: true, service: 'BRASS+', version: 'supabase-storage-v1', storage: hasSupabase ? 'supabase' : 'local', supabaseConfigured: hasSupabase }));
+app.get('/api/health', async (req, res) => {
+  const result = { ok: true, service: 'BRASS+', version: 'supabase-storage-v2-leave-diagnostics', storage: hasSupabase ? 'supabase' : 'local', supabaseConfigured: hasSupabase, supabaseConnected: false };
+  if (!hasSupabase) return res.status(503).json({ ...result, ok: false, error: 'Render環境変数 SUPABASE_URL / SUPABASE_SECRET_KEY が未設定です。' });
+  try {
+    // This is a real REST request, not merely an environment-variable check.
+    await supabaseRequest('brass_groups?select=code&limit=1');
+    result.supabaseConnected = true;
+    return res.json(result);
+  } catch (error) {
+    console.error('[BRASS+ health] Supabase connection failed:', error?.message || error);
+    return res.status(503).json({ ...result, ok: false, error: 'Supabaseに接続できません。テーブル名・列名・キー設定を確認してください。' });
+  }
+});
 app.post('/api/groups', async (req, res) => {
   const db = await readDB();
   let requested = normalizeCode(req.body?.code);
@@ -156,20 +168,28 @@ app.post('/api/groups/:code/join', async (req, res) => {
   res.json({ ok: true, code: g.code, name: g.name, members: g.members, data: g.data, deletedItems: g.deletedItems || {} });
 });
 app.post('/api/groups/:code/leave', async (req, res) => {
-  const db = await readDB(); const code = normalizeCode(req.params.code); const g = db.groups[code];
-  if (!g) return res.json({ ok: true, left: false, missing: true, members: [] });
-  const name = cleanText(req.body?.name, 40) || 'メンバー';
-  const clientId = cleanText(req.body?.clientId, 100);
-  const before = g.members.length;
-  // First remove the exact device record. If the device ID changed (for example after
-  // switching browser contexts), allow the matching name as a compatibility fallback.
-  let matchIndex = clientId ? g.members.findIndex(m => m.clientId && m.clientId === clientId) : -1;
-  if (matchIndex < 0) matchIndex = g.members.findIndex(m => m.name === name);
-  if (matchIndex >= 0) g.members.splice(matchIndex, 1);
-  const left = g.members.length < before;
-  if (left) addEvent(g, 'member-left', name, `${name}さんが退会しました`, clientId);
-  await writeDB(db);
-  res.json({ ok: true, left, members: g.members });
+  try {
+    const code = normalizeCode(req.params.code);
+    if (!code) return res.status(400).json({ ok: false, error: 'グループコードが空です。' });
+    const db = await readDB();
+    const g = db.groups[code];
+    if (!g) return res.json({ ok: true, left: false, missing: true, members: [] });
+    if (!Array.isArray(g.members)) g.members = [];
+    const name = cleanText(req.body?.name, 40) || 'メンバー';
+    const clientId = cleanText(req.body?.clientId, 100);
+    const before = g.members.length;
+    // Prefer the exact device ID; use the name only for older clients without a matching ID.
+    let matchIndex = clientId ? g.members.findIndex(m => m.clientId && m.clientId === clientId) : -1;
+    if (matchIndex < 0) matchIndex = g.members.findIndex(m => m.name === name);
+    if (matchIndex >= 0) g.members.splice(matchIndex, 1);
+    const left = g.members.length < before;
+    if (left) addEvent(g, 'member-left', name, `${name}さんが退会しました`, clientId);
+    await writeDB(db);
+    return res.json({ ok: true, left, members: g.members });
+  } catch (error) {
+    console.error('[BRASS+ leave] Failed:', error?.message || error);
+    return res.status(503).json({ ok: false, error: '退会情報を共有データベースに保存できませんでした。Supabaseの接続・テーブル設定を確認してください。' });
+  }
 });
 app.get('/api/groups/:code/events', async (req, res) => {
   const db = await readDB(); const g = db.groups[normalizeCode(req.params.code)];
@@ -261,5 +281,17 @@ app.post('/api/analyze', (req, res) => {
   if (!tips.length && issues.length) tips.push({ title: '課題を整理する', text: '課題点にタグを付けると、傾向をより分かりやすく分析できます。まずは一度に一つの課題に絞って練習しましょう。', url: 'https://www.yamaha.com/ja/musical_instrument_guide/trombone/' });
   res.json({ ok: true, summary: issues.length ? `${issues.length}件の課題点をもとに、タグの多い順で練習のヒントをまとめました。これはルールベースの分析で、生成AIによる分析ではありません。` : '課題点がまだ登録されていません。課題点を登録してから、もう一度分析してください。', tips });
 });
-app.use((req, res) => res.sendFile(path.join(__dirname, 'index.html')));
+// Keep API failures as JSON so the client can show a useful message instead of HTML.
+app.use((err, req, res, next) => {
+  console.error('[BRASS+ request error]', req.method, req.originalUrl, err?.message || err);
+  if (res.headersSent) return next(err);
+  if (req.path.startsWith('/api/')) {
+    return res.status(503).json({ ok: false, error: 'サーバーまたは共有データベースとの通信に失敗しました。時間をおいて再試行してください。' });
+  }
+  return res.status(500).send('サーバーエラーが発生しました。');
+});
+app.use((req, res) => {
+  if (req.path.startsWith('/api/')) return res.status(404).json({ ok: false, error: 'APIが見つかりません。Renderのデプロイ状態を確認してください。' });
+  res.sendFile(path.join(__dirname, 'index.html'));
+});
 app.listen(PORT, '0.0.0.0', () => { console.log(`BRASS+ server running on port ${PORT}`); console.log(`BRASS+ storage: ${hasSupabase ? 'Supabase configured' : 'LOCAL FILE (Supabase env missing)'}`); });
