@@ -21,45 +21,72 @@ app.use((req, res, next) => {
 app.use(express.static(__dirname, { index: false, setHeaders(res, filePath) { if (filePath.endsWith('.html')) { res.setHeader('Cache-Control', 'no-store, max-age=0'); res.setHeader('Content-Type', 'text/html; charset=utf-8'); } } }));
 app.get('/', (req, res) => { res.setHeader('Cache-Control', 'no-store, max-age=0'); res.type('html').sendFile(path.join(__dirname, 'index.html')); });
 
-function supabaseConfig() {
-  const url = String(process.env.SUPABASE_URL || '').replace(/\/+$/, '');
-  const key = String(process.env.SUPABASE_SECRET_KEY || process.env.SUPABASE_SERVICE_ROLE_KEY || '');
-  return url && key ? { url, key } : null;
-}
+// Supabase is the shared source of truth when credentials are configured.
+// The local JSON file remains a fallback and a one-time migration source.
+const SUPABASE_URL = String(process.env.SUPABASE_URL || '').replace(/\/$/, '');
+const SUPABASE_KEY = process.env.SUPABASE_SECRET_KEY || process.env.SUPABASE_SERVICE_ROLE_KEY || '';
+const hasSupabase = Boolean(SUPABASE_URL && SUPABASE_KEY);
+let supabaseWarningLogged = false;
 async function supabaseRequest(pathname, options = {}) {
-  const cfg = supabaseConfig();
-  if (!cfg) throw new Error('Supabase環境変数が設定されていません');
-  const response = await fetch(`${cfg.url}/rest/v1/${pathname}`, {
+  if (!hasSupabase) throw new Error('Supabase is not configured: set SUPABASE_URL and SUPABASE_SECRET_KEY in Render Environment.');
+  const response = await fetch(`${SUPABASE_URL}/rest/v1/${pathname}`, {
     ...options,
-    headers: { apikey: cfg.key, Authorization: `Bearer ${cfg.key}`, 'Content-Type': 'application/json', Prefer: 'resolution=merge-duplicates,return=minimal', ...(options.headers || {}) }
-  });
-  if (!response.ok) throw new Error(`Supabase HTTP ${response.status}: ${(await response.text()).slice(0, 300)}`);
-  return response.status === 204 ? null : response.json().catch(() => null);
-}
-async function readDB() {
-  if (supabaseConfig()) {
-    const rows = await supabaseRequest('brass_groups?select=code,group_data');
-    const groups = {};
-    for (const row of (Array.isArray(rows) ? rows : [])) {
-      const code = normalizeCode(row.code);
-      if (code && row.group_data && typeof row.group_data === 'object') groups[code] = row.group_data;
+    headers: {
+      apikey: SUPABASE_KEY,
+      Authorization: `Bearer ${SUPABASE_KEY}`,
+      'Content-Type': 'application/json',
+      ...(options.headers || {})
     }
-    return { groups };
-  }
+  });
+  const body = await response.text();
+  if (!response.ok) throw new Error(`Supabase HTTP ${response.status}: ${body.slice(0, 500)}`);
+  return body ? JSON.parse(body) : null;
+}
+async function readLocalDB() {
   try { return JSON.parse(await fs.readFile(DATA_FILE, 'utf8')); }
   catch { return { groups: {} }; }
 }
-async function writeDB(db) {
-  if (supabaseConfig()) {
-    const rows = Object.entries(db.groups || {}).map(([code, group]) => ({ code, group_data: group, updated_at: new Date().toISOString() }));
-    // Upsert groups individually to avoid oversized requests; a Supabase error is surfaced, never silently saved locally.
-    for (const row of rows) await supabaseRequest('brass_groups?on_conflict=code', { method: 'POST', body: JSON.stringify(row) });
-    return;
-  }
+async function writeLocalDB(db) {
   await fs.mkdir(DATA_DIR, { recursive: true });
   const tmp = DATA_FILE + '.tmp';
   await fs.writeFile(tmp, JSON.stringify(db, null, 2), 'utf8');
   await fs.rename(tmp, DATA_FILE);
+}
+async function readDB() {
+  if (!hasSupabase) return readLocalDB();
+  const rows = await supabaseRequest('brass_groups?select=code,group_data');
+  const groups = {};
+  for (const row of (Array.isArray(rows) ? rows : [])) {
+    if (row && row.code && row.group_data && typeof row.group_data === 'object') groups[normalizeCode(row.code)] = row.group_data;
+  }
+  // If the Supabase table is empty, migrate any groups that still exist in the old local file.
+  if (!Object.keys(groups).length) {
+    const local = await readLocalDB();
+    for (const [code, group] of Object.entries(local.groups || {})) {
+      if (group && typeof group === 'object') {
+        groups[normalizeCode(code)] = group;
+        await supabaseRequest('brass_groups?on_conflict=code', {
+          method: 'POST',
+          headers: { Prefer: 'resolution=merge-duplicates,return=minimal' },
+          body: JSON.stringify({ code: normalizeCode(code), group_data: group, updated_at: new Date().toISOString() })
+        });
+      }
+    }
+  }
+  return { groups };
+}
+async function writeDB(db) {
+  // Keep a local cache for diagnostics, but the Supabase table is authoritative.
+  await writeLocalDB(db);
+  if (!hasSupabase) return;
+  for (const [rawCode, group] of Object.entries(db.groups || {})) {
+    const code = normalizeCode(rawCode);
+    await supabaseRequest('brass_groups?on_conflict=code', {
+      method: 'POST',
+      headers: { Prefer: 'resolution=merge-duplicates,return=minimal' },
+      body: JSON.stringify({ code, group_data: group, updated_at: new Date().toISOString() })
+    });
+  }
 }
 const cleanText = (v, max = 200) => String(v ?? '').trim().slice(0, max);
 const normalizeCode = v => cleanText(v, 32).toUpperCase();
@@ -96,7 +123,7 @@ function mergeData(group, incoming) {
   // Myポジション表はサーバーへ保存しない（個人専用）
   delete group.data.mySlides;
 }
-app.get('/api/health', (req, res) => res.json({ ok: true, service: 'BRASS+', version: 'supabase-storage-v1' }));
+app.get('/api/health', (req, res) => res.json({ ok: true, service: 'BRASS+', version: 'supabase-storage-v1', storage: hasSupabase ? 'supabase' : 'local', supabaseConfigured: hasSupabase }));
 app.post('/api/groups', async (req, res) => {
   const db = await readDB();
   let requested = normalizeCode(req.body?.code);
@@ -235,4 +262,4 @@ app.post('/api/analyze', (req, res) => {
   res.json({ ok: true, summary: issues.length ? `${issues.length}件の課題点をもとに、タグの多い順で練習のヒントをまとめました。これはルールベースの分析で、生成AIによる分析ではありません。` : '課題点がまだ登録されていません。課題点を登録してから、もう一度分析してください。', tips });
 });
 app.use((req, res) => res.sendFile(path.join(__dirname, 'index.html')));
-app.listen(PORT, '0.0.0.0', () => console.log(`BRASS+ server running on port ${PORT}`));
+app.listen(PORT, '0.0.0.0', () => { console.log(`BRASS+ server running on port ${PORT}`); console.log(`BRASS+ storage: ${hasSupabase ? 'Supabase configured' : 'LOCAL FILE (Supabase env missing)'}`); });
