@@ -169,14 +169,13 @@ const validEmail = v => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(v||'')) && Stri
 app.post('/api/account/register', async (req, res) => {
   try {
     if (!hasSupabase || !ACCOUNT_SIGN_KEY) return res.status(503).json({ error: 'アカウント機能にはSupabaseとRenderの設定が必要です。' });
-    const username = cleanText(req.body?.username, 32);
-    const password = String(req.body?.password || '');
     const email = cleanText(req.body?.email,254).toLowerCase();
-    if (!validEmail(email)) return res.status(400).json({error:'パスワード再設定用のメールアドレスを入力してください。'});
-    if (!/^[A-Za-z0-9ぁ-んァ-ヶ一-龠ー_-]{2,32}$/.test(username)) return res.status(400).json({ error: 'アカウント名は2〜32文字で入力してください。' });
+    const username = email; // 内部互換用。画面ではユーザー名を使わずメールアドレスでログインする。
+    const password = String(req.body?.password || '');
+    if (!validEmail(email)) return res.status(400).json({error:'有効なメールアドレスを入力してください。'});
     if (password.length < 8 || password.length > 128) return res.status(400).json({ error: 'パスワードは8〜128文字にしてください。' });
-    const existing = await accountRequest('brass_accounts?select=id&username=ilike.' + encodeURIComponent(username) + '&limit=1');
-    if (existing?.length) return res.status(409).json({ error: 'そのアカウント名は使用されています。別の名前にしてください。' });
+    const existing = await accountRequest('brass_accounts?select=id&email=ilike.' + encodeURIComponent(email) + '&limit=1');
+    if (existing?.length) return res.status(409).json({ error: 'このメールアドレスはすでに登録されています。ログインしてください。' });
     const pw = hashPassword(password);
     const rows = await accountRequest('brass_accounts', { method:'POST', headers:{ Prefer:'return=representation' }, body:JSON.stringify({ username, email, password_salt:pw.salt, password_hash:pw.hash, account_data:{} }) });
     const account = rows?.[0]; if (!account) throw new Error('account create failed');
@@ -186,9 +185,10 @@ app.post('/api/account/register', async (req, res) => {
 app.post('/api/account/login', async (req, res) => {
   try {
     if (!hasSupabase || !ACCOUNT_SIGN_KEY) return res.status(503).json({ error: 'アカウント機能にはSupabaseとRenderの設定が必要です。' });
-    const username = cleanText(req.body?.username, 32), password = String(req.body?.password || '');
-    const rows = await accountRequest('brass_accounts?select=id,username,email,password_salt,password_hash,account_data&username=ilike.' + encodeURIComponent(username) + '&limit=1');
-    const a = rows?.[0]; if (!a || !crypto.timingSafeEqual(Buffer.from(hashPassword(password,a.password_salt).hash,'hex'), Buffer.from(a.password_hash,'hex'))) return res.status(401).json({ error:'アカウント名またはパスワードが違います。' });
+    const email = cleanText(req.body?.email,254).toLowerCase(), password = String(req.body?.password || '');
+    if (!validEmail(email)) return res.status(400).json({error:'メールアドレスを入力してください。'});
+    const rows = await accountRequest('brass_accounts?select=id,username,email,password_salt,password_hash,account_data&email=ilike.' + encodeURIComponent(email) + '&limit=1');
+    const a = rows?.[0]; if (!a || !crypto.timingSafeEqual(Buffer.from(hashPassword(password,a.password_salt).hash,'hex'), Buffer.from(a.password_hash,'hex'))) return res.status(401).json({ error:'メールアドレスまたはパスワードが違います。' });
     return res.json({ ok:true, token:accountToken(a), account:{id:a.id, username:a.username, email:a.email}, data:a.account_data || {} });
   } catch (e) { console.error('[BRASS+ account login]', e?.message || e); return res.status(503).json({ error:'ログインできませんでした。通信とSupabaseの設定を確認してください。' }); }
 });
