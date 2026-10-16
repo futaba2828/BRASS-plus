@@ -165,6 +165,26 @@ function emailTransport() {
   if(!host||!user||!pass) return null;
   return nodemailer.createTransport({host,port:Number(process.env.SMTP_PORT||587),secure:String(process.env.SMTP_SECURE||'false')==='true',auth:{user,pass}});
 }
+async function sendResetEmail({to, subject, text}) {
+  // Prefer Resend when configured. SMTP remains available as a fallback.
+  const resendKey = process.env.RESEND_API_KEY || process.env.BRASS_RESEND_API_KEY;
+  const from = resendKey ? (process.env.RESEND_FROM || 'BRASS+ <onboarding@resend.dev>') : (process.env.SMTP_FROM || process.env.SMTP_USER);
+  if (resendKey) {
+    const response = await fetch('https://api.resend.com/emails', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${resendKey}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ from, to: [to], subject, text })
+    });
+    const result = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(`Resend ${response.status}: ${result.message || result.name || 'email send failed'}`);
+    return { provider: 'resend', id: result.id || null };
+  }
+  const mailer = emailTransport();
+  if (!mailer) throw new Error('Email sender is not configured: set RESEND_API_KEY and RESEND_FROM, or SMTP settings.');
+  const result = await mailer.sendMail({ from, to, subject, text });
+  if (!result || !result.accepted || !result.accepted.length) throw new Error('SMTP did not accept recipient');
+  return { provider: 'smtp', id: result.messageId || null };
+}
 const validEmail = v => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(v||'')) && String(v).length<=254;
 app.post('/api/account/register', async (req, res) => {
   try {
@@ -215,19 +235,51 @@ app.post('/api/account/password', async (req,res) => {
     res.json({ok:true});
   }catch(e){console.error('[account password]',e?.message||e);res.status(503).json({error:'パスワードを変更できませんでした。'});}
 });
+app.post('/api/account/delete', async (req, res) => {
+  try {
+    const id = accountFromRequest(req);
+    if (!id) return res.status(401).json({ error: 'ログインし直してください。' });
+    const password = String(req.body?.password || '');
+    if (!password) return res.status(400).json({ error: '本人確認のため、現在のBRASS+専用パスワードを入力してください。' });
+    const rows = await accountRequest('brass_accounts?select=id,password_salt,password_hash&id=eq.' + encodeURIComponent(id) + '&limit=1');
+    const a = rows?.[0];
+    if (!a) return res.status(404).json({ error: 'アカウントが見つかりません。' });
+    const actual = Buffer.from(hashPassword(password, a.password_salt).hash, 'hex');
+    const expected = Buffer.from(a.password_hash, 'hex');
+    if (actual.length !== expected.length || !crypto.timingSafeEqual(actual, expected)) return res.status(401).json({ error: 'パスワードが違います。アカウントは削除されていません。' });
+    await accountRequest('brass_accounts?id=eq.' + encodeURIComponent(id), { method: 'DELETE', headers: { Prefer: 'return=minimal' } });
+    return res.json({ ok: true, message: 'アカウントを削除しました。' });
+  } catch (e) {
+    console.error('[BRASS+ account delete]', e?.message || e);
+    return res.status(503).json({ error: 'アカウントを削除できませんでした。サーバー設定を確認してください。' });
+  }
+});
+
 app.post('/api/account/forgot', async (req,res) => {
   try {
-    const email=cleanText(req.body?.email,254).toLowerCase(); if(!validEmail(email))return res.status(400).json({error:'登録したメールアドレスを入力してください。'});
-    const mailer=emailTransport(); if(!mailer)return res.status(503).json({error:'パスワード再設定メールの送信設定がまだ完了していません。'});
-    const rows=await accountRequest('brass_accounts?select=id,username,email&email=ilike.'+encodeURIComponent(email)+'&limit=1'); const a=rows?.[0];
-    // Always return a generic message to avoid revealing whether an account exists.
-    if(a){const raw=crypto.randomBytes(32).toString('hex'), tokenHash=crypto.createHash('sha256').update(raw).digest('hex');
-      await accountRequest('brass_accounts?id=eq.'+encodeURIComponent(a.id),{method:'PATCH',headers:{Prefer:'return=minimal'},body:JSON.stringify({reset_token_hash:tokenHash,reset_expires_at:new Date(Date.now()+30*60*1000).toISOString()})});
-      const base=String(process.env.BRASS_PUBLIC_URL||'https://futaba2828.github.io/BRASS-plus/');
-      await mailer.sendMail({from:process.env.SMTP_FROM||process.env.SMTP_USER,to:a.email,subject:'BRASS+ パスワード再設定',text:`${a.username} さん\n\n次のリンクから30分以内にパスワードを再設定してください。\n${base}${base.includes('?')?'&':'?'}resetToken=${raw}\n\n心当たりがない場合は、このメールを無視してください。`});
-    }
-    res.json({ok:true,message:'登録メールアドレスに該当するアカウントがあれば、再設定メールを送信しました。'});
-  }catch(e){console.error('[account forgot]',e?.message||e);res.status(503).json({error:'再設定メールを送信できませんでした。設定を確認してください。'});}
+    const email=cleanText(req.body?.email,254).toLowerCase();
+    if(!validEmail(email)) return res.status(400).json({error:'登録したメールアドレスを入力してください。'});
+    const rows=await accountRequest('brass_accounts?select=id,username,email&email=ilike.'+encodeURIComponent(email)+'&limit=1');
+    const a=rows?.[0];
+    // Do not claim an email was sent unless the provider confirms acceptance.
+    if (!a) return res.json({ok:true,sent:false,message:'申請を確認しました。登録したメールアドレスと一致するアカウントがある場合にメールが送信されます。届かない場合はアドレスを確認してください。'});
+    const raw=crypto.randomBytes(32).toString('hex'), tokenHash=crypto.createHash('sha256').update(raw).digest('hex');
+    await accountRequest('brass_accounts?id=eq.'+encodeURIComponent(a.id),{method:'PATCH',headers:{Prefer:'return=minimal'},body:JSON.stringify({reset_token_hash:tokenHash,reset_expires_at:new Date(Date.now()+30*60*1000).toISOString()})});
+    const base=String(process.env.BRASS_PUBLIC_URL||'https://futaba2828.github.io/BRASS-plus/');
+    const resetUrl=`${base}${base.includes('?')?'&':'?'}resetToken=${raw}`;
+    const text=`BRASS+ アカウントのパスワード再設定
+
+次のリンクから30分以内にパスワードを再設定してください。
+${resetUrl}
+
+心当たりがない場合は、このメールを無視してください。`;
+    await sendResetEmail({to:a.email,subject:'BRASS+ パスワード再設定',text});
+    console.log('[BRASS+ account forgot] reset email accepted by provider for account', a.id);
+    return res.json({ok:true,sent:true,message:'再設定メールを送信しました。受信トレイと迷惑メールフォルダを確認してください。'});
+  } catch(e) {
+    console.error('[BRASS+ account forgot] email send failed:',e?.message||e);
+    return res.status(503).json({error:'再設定メールを送信できませんでした。RenderのRESEND_API_KEY・RESEND_FROM（またはSMTP設定）と、送信元ドメインの認証状態を確認してください。'});
+  }
 });
 app.post('/api/account/reset', async (req,res) => {
   try {
