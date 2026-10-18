@@ -354,13 +354,61 @@ app.post('/api/account/reset', async (req,res) => {
     const pw=hashPassword(password);await accountRequest('brass_accounts?id=eq.'+encodeURIComponent(a.id),{method:'PATCH',headers:{Prefer:'return=minimal'},body:JSON.stringify({password_salt:pw.salt,password_hash:pw.hash,reset_token_hash:null,reset_expires_at:null,updated_at:new Date().toISOString()})});res.json({ok:true});
   }catch(e){console.error('[account reset]',e?.message||e);res.status(503).json({error:'パスワードを再設定できませんでした。'});}
 });
-app.get('/api/account/data', async (req,res) => {
-  try { const id=accountFromRequest(req); if(!id)return res.status(401).json({error:'ログインし直してください。'}); const rows=await accountRequest('brass_accounts?select=username,email,account_data&id=eq.'+encodeURIComponent(id)+'&limit=1'); if(!rows?.[0])return res.status(404).json({error:'アカウントが見つかりません。'}); res.json({ok:true,account:{id,username:rows[0].username,email:rows[0].email},data:rows[0].account_data||{}}); }
-  catch(e){console.error('[BRASS+ account data get]',e?.message||e);res.status(503).json({error:'アカウントデータを読み込めませんでした。'});}
-});
-app.put('/api/account/data', async (req,res) => {
-  try { const id=accountFromRequest(req); if(!id)return res.status(401).json({error:'ログインし直してください。'}); const data=req.body?.data; if(!data || typeof data!=='object')return res.status(400).json({error:'保存データが不正です。'}); const safe={ profile:data.profile||{}, scaleChecks:data.scaleChecks||{}, mySlides:Array.isArray(data.mySlides)?data.mySlides:[], mornings:data.mornings||{}, sectionPrefs:data.sectionPrefs||{}, navOrder:Array.isArray(data.navOrder)?data.navOrder:[], groups:Array.isArray(data.groups)?data.groups.filter(x=>typeof x==='string').slice(0,100):[], privateData:data.privateData&&typeof data.privateData==='object'?data.privateData:{} }; await accountRequest('brass_accounts?id=eq.'+encodeURIComponent(id),{method:'PATCH',headers:{Prefer:'return=minimal'},body:JSON.stringify({account_data:safe,updated_at:new Date().toISOString()})}); res.json({ok:true}); }
-  catch(e){console.error('[BRASS+ account data put]',e?.message||e);res.status(503).json({error:'アカウントデータを保存できませんでした。'});}
+
+app.put('/api/account/data', async (req, res) => {
+  try {
+    const id = accountFromRequest(req);
+    if (!id) {
+      return res.status(401).json({
+        error: 'ログインし直してください。'
+      });
+    }
+
+    const data = req.body?.data;
+    if (!data || typeof data !== 'object' || Array.isArray(data)) {
+      return res.status(400).json({
+        error: '保存データが不正です。'
+      });
+    }
+
+    const safe = {
+      profile: data.profile || {},
+      scaleChecks: data.scaleChecks || {},
+      mySlides: Array.isArray(data.mySlides) ? data.mySlides : [],
+      mornings: data.mornings || {},
+      sectionPrefs: data.sectionPrefs || {},
+      navOrder: Array.isArray(data.navOrder) ? data.navOrder : [],
+      groups: Array.isArray(data.groups)
+        ? [...new Set(data.groups.filter(x => typeof x === 'string' && x))]
+            .slice(0, 100)
+        : [],
+      currentGroup: typeof data.currentGroup === 'string'
+        ? data.currentGroup
+        : '',
+      privateData: data.privateData && typeof data.privateData === 'object'
+        ? data.privateData
+        : {}
+    };
+
+    await accountRequest(
+      'brass_accounts?id=eq.' + encodeURIComponent(id),
+      {
+        method: 'PATCH',
+        headers: { Prefer: 'return=minimal' },
+        body: JSON.stringify({
+          account_data: safe,
+          updated_at: new Date().toISOString()
+        })
+      }
+    );
+
+    res.json({ ok: true });
+  } catch (e) {
+    console.error('[BRASS+ account data put]', e?.message || e);
+    res.status(503).json({
+      error: 'アカウントデータを保存できませんでした。'
+    });
+  }
 });
 
 app.post('/api/groups', async (req, res) => {
