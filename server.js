@@ -3,6 +3,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import nodemailer from 'nodemailer';
+import webpush from 'web-push';
 import { fileURLToPath } from 'node:url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -27,6 +28,11 @@ app.get('/', (req, res) => { res.setHeader('Cache-Control', 'no-store, max-age=0
 const SUPABASE_URL = String(process.env.SUPABASE_URL || '').replace(/\/$/, '');
 const SUPABASE_KEY = process.env.SUPABASE_SECRET_KEY || process.env.SUPABASE_SERVICE_ROLE_KEY || '';
 const hasSupabase = Boolean(SUPABASE_URL && SUPABASE_KEY);
+const VAPID_PUBLIC_KEY = String(process.env.VAPID_PUBLIC_KEY || '');
+const VAPID_PRIVATE_KEY = String(process.env.VAPID_PRIVATE_KEY || '');
+const VAPID_SUBJECT = String(process.env.VAPID_SUBJECT || 'mailto:brass-plus@example.com');
+const pushReady = Boolean(VAPID_PUBLIC_KEY && VAPID_PRIVATE_KEY && hasSupabase);
+if (VAPID_PUBLIC_KEY && VAPID_PRIVATE_KEY) { try { webpush.setVapidDetails(VAPID_SUBJECT, VAPID_PUBLIC_KEY, VAPID_PRIVATE_KEY); } catch (e) { console.error('[BRASS+ push] VAPID設定エラー:', e.message); } }
 let supabaseWarningLogged = false;
 async function supabaseRequest(pathname, options = {}) {
   if (!hasSupabase) throw new Error('Supabase is not configured: set SUPABASE_URL and SUPABASE_SECRET_KEY in Render Environment.');
@@ -43,6 +49,27 @@ async function supabaseRequest(pathname, options = {}) {
   if (!response.ok) throw new Error(`Supabase HTTP ${response.status}: ${body.slice(0, 500)}`);
   return body ? JSON.parse(body) : null;
 }
+async function sendGroupPush(code, event) {
+  if (!pushReady) return;
+  let rows;
+  try { rows = await supabaseRequest(`brass_push_subscriptions?select=endpoint,subscription,client_id,sound_enabled,vibration_enabled&group_code=eq.${encodeURIComponent(normalizeCode(code))}`); }
+  catch (e) { console.warn('[BRASS+ push] subscriptions read failed:', e.message); return; }
+  let groupName = normalizeCode(code);
+  try { const db = await readDB(); groupName = cleanText(db.groups[normalizeCode(code)]?.name || groupName, 80).replace(/グループ/g, '') || groupName; } catch {}
+  const payload = JSON.stringify({ title: `【${groupName}】${event.type === 'item-deleted' ? '削除のお知らせ' : event.type === 'member-left' ? 'メンバーの退出' : event.type === 'member-renamed' ? 'メンバー情報の変更' : '新しいお知らせ'}`, body: `${event.actor ? event.actor + '：' : ''}${event.detail || 'グループに更新があります'}`.slice(0,180), url: './', tag: `brass-${normalizeCode(code)}-${event.id}`, soundEnabled: true, vibrationEnabled: true });
+  await Promise.all((Array.isArray(rows) ? rows : []).filter(row => row.client_id !== event.clientId).map(async row => {
+    try {
+      const data = JSON.parse(payload); data.soundEnabled = row.sound_enabled !== false; data.vibrationEnabled = row.vibration_enabled !== false;
+      await webpush.sendNotification(row.subscription, JSON.stringify(data), { TTL: 60 * 60 * 12 });
+    } catch (e) {
+      const status = e?.statusCode;
+      if (status === 404 || status === 410) {
+        try { await supabaseRequest(`brass_push_subscriptions?endpoint=eq.${encodeURIComponent(row.endpoint)}`, { method: 'DELETE' }); } catch {}
+      } else console.warn('[BRASS+ push] one delivery failed:', e?.message || e);
+    }
+  }));
+}
+
 async function readLocalDB() {
   try { return JSON.parse(await fs.readFile(DATA_FILE, 'utf8')); }
   catch { return { groups: {} }; }
@@ -99,8 +126,11 @@ function newGroup(code, name, owner, clientId = '') {
 function addEvent(group, type, actor, detail, clientId = '') {
   group.events = Array.isArray(group.events) ? group.events : [];
   group.nextEventId = (Number(group.nextEventId) || 0) + 1;
-  group.events.push({ id: group.nextEventId, type, actor: cleanText(actor, 40) || 'メンバー', detail: cleanText(detail, 100), clientId: cleanText(clientId, 100), at: new Date().toISOString() });
+  const event = { id: group.nextEventId, type, actor: cleanText(actor, 40) || 'メンバー', detail: cleanText(detail, 100), clientId: cleanText(clientId, 100), at: new Date().toISOString() };
+  group.events.push(event);
   group.events = group.events.slice(-150);
+  // Push delivery is deliberately detached from group-data writes, so a push failure never blocks saving.
+  if (group.code) setTimeout(() => sendGroupPush(group.code, event).catch(err => console.warn('[BRASS+ push] delivery failed:', err?.message || err)), 0);
 }
 function mergeArray(target, incoming, deleted = []) {
   const blocked = new Set((Array.isArray(deleted) ? deleted : []).map(String));
@@ -124,8 +154,42 @@ function mergeData(group, incoming) {
   // Myポジション表はサーバーへ保存しない（個人専用）
   delete group.data.mySlides;
 }
+app.get('/api/push/public-key', (req, res) => {
+  if (!VAPID_PUBLIC_KEY || !VAPID_PRIVATE_KEY) return res.status(503).json({ ok: false, error: '通知サーバーのVAPID設定が未完了です。' });
+  if (!hasSupabase) return res.status(503).json({ ok: false, error: '通知保存用のSupabase設定が必要です。' });
+  res.json({ ok: true, publicKey: VAPID_PUBLIC_KEY });
+});
+app.post('/api/push/subscribe', async (req, res) => {
+  if (!pushReady) return res.status(503).json({ ok: false, error: '通知サーバーの設定が未完了です。' });
+  const code = normalizeCode(req.body?.groupCode), clientId = cleanText(req.body?.clientId, 100);
+  const subscription = req.body?.subscription;
+  const endpoint = cleanText(subscription?.endpoint, 2000);
+  if (!/^[A-Z0-9]{1,32}$/.test(code) || !endpoint || !subscription?.keys?.p256dh || !subscription?.keys?.auth) return res.status(400).json({ ok: false, error: '通知登録情報が不正です。グループに参加してから再度お試しください。' });
+  try {
+    const db = await readDB(); if (!db.groups[code]) return res.status(404).json({ ok: false, error: '参加中のグループが見つかりません。' });
+    const body = { endpoint, group_code: code, client_id: clientId, subscription, sound_enabled: req.body?.soundEnabled !== false, vibration_enabled: req.body?.vibrationEnabled !== false, updated_at: new Date().toISOString() };
+    await supabaseRequest('brass_push_subscriptions?on_conflict=endpoint', { method: 'POST', headers: { Prefer: 'resolution=merge-duplicates,return=minimal' }, body: JSON.stringify(body) });
+    res.json({ ok: true });
+  } catch (e) { console.error('[BRASS+ push] subscribe failed:', e.message); res.status(503).json({ ok: false, error: '通知登録に失敗しました。Supabaseの通知テーブル設定を確認してください。' }); }
+});
+app.post('/api/push/preferences', async (req, res) => {
+  if (!pushReady) return res.status(503).json({ ok: false, error: '通知サーバーの設定が未完了です。' });
+  const endpoint = cleanText(req.body?.endpoint, 2000);
+  if (!endpoint) return res.status(400).json({ ok: false, error: '通知登録が見つかりません。通知を一度オンにしてください。' });
+  try {
+    await supabaseRequest(`brass_push_subscriptions?endpoint=eq.${encodeURIComponent(endpoint)}`, { method: 'PATCH', headers: { Prefer: 'return=minimal' }, body: JSON.stringify({ sound_enabled: req.body?.soundEnabled !== false, vibration_enabled: req.body?.vibrationEnabled !== false, updated_at: new Date().toISOString() }) });
+    res.json({ ok: true });
+  } catch (e) { res.status(503).json({ ok: false, error: '通知設定を保存できませんでした。' }); }
+});
+app.post('/api/push/unsubscribe', async (req, res) => {
+  const endpoint = cleanText(req.body?.endpoint, 2000);
+  if (!endpoint || !hasSupabase) return res.json({ ok: true });
+  try { await supabaseRequest(`brass_push_subscriptions?endpoint=eq.${encodeURIComponent(endpoint)}`, { method: 'DELETE' }); res.json({ ok: true }); }
+  catch (e) { res.status(503).json({ ok: false, error: '通知登録を解除できませんでした。' }); }
+});
+
 app.get('/api/health', async (req, res) => {
-  const result = { ok: true, service: 'BRASS+', version: 'supabase-storage-v2-leave-diagnostics', storage: hasSupabase ? 'supabase' : 'local', supabaseConfigured: hasSupabase, supabaseConnected: false };
+  const result = { ok: true, service: 'BRASS+', version: 'supabase-storage-v3-web-push', storage: hasSupabase ? 'supabase' : 'local', supabaseConfigured: hasSupabase, supabaseConnected: false, pushConfigured: pushReady };
   if (!hasSupabase) return res.status(503).json({ ...result, ok: false, error: 'Render環境変数 SUPABASE_URL / SUPABASE_SECRET_KEY が未設定です。' });
   try {
     // This is a real REST request, not merely an environment-variable check.
