@@ -1,0 +1,48 @@
+BRASS+ 通知修正コード（既存機能を残すための差分）
+
+公開中の server.js では、最後に /api/ 以外の未定義URLへ index.html を返す処理があります。
+そのため /push-sw.js が存在しないと、サービスワーカーの要求に HTML が返されて登録に失敗します。
+
+【1】push-sw.js
+同梱の push-sw.js を GitHub リポジトリ直下（server.js / index.html と同じ階層）に追加してください。
+
+【2】server.js にルートを追加
+server.js の末尾付近にある次の行より前：
+  app.use((req, res) => {
+
+このコードを追加してください：
+
+app.get('/push-sw.js', (req, res) => {
+  res.setHeader('Content-Type', 'application/javascript; charset=utf-8');
+  res.setHeader('Service-Worker-Allowed', '/');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.sendFile(path.join(__dirname, 'push-sw.js'));
+});
+
+【3】index.html の通知設定ボタン
+公開中の index.html には renderBrassPushControls() が空の関数として存在します。
+まずこの関数を見つけ、次のコードで置き換えてください：
+
+function renderBrassPushControls(){
+  const heading = [...document.querySelectorAll('h3')].find(el => el.textContent.includes('ロック画面通知'));
+  if (!heading) return;
+  const card = heading.closest('.card');
+  if (!card || card.querySelector('#brassPushEnableButton')) return;
+  const button = document.createElement('button');
+  button.id = 'brassPushEnableButton';
+  button.className = 'btn primary';
+  button.type = 'button';
+  button.textContent = (window.Notification && Notification.permission === 'granted') ? '通知を登録・確認する' : '通知をオンにする';
+  button.style.marginTop = '12px';
+  button.addEventListener('click', () => toggleBrassPush());
+  card.appendChild(button);
+}
+
+さらに、settings() の通知説明文のすぐ後ろにあるカード内、または通知カードの末尾に、次の文章があると分かりやすいです：
+「通知をオンにするには、このアプリをホーム画面から開いて操作してください。」
+
+【注意】
+- この差分はグループデータやSupabaseのデータを変更しません。
+- 既存の index.html 全文をこちらで安全に再構成できていないため、index.html / server.js の完成版全体を捏造して同梱していません。
+- 変更後はRenderの再デプロイ完了を待ち、ホーム画面からBRASS+を開き、設定→ロック画面通知→「通知をオンにする」を押してください。
+- まずは通知を登録した別端末からグループの目標を追加してテストしてください。登録した本人が追加した更新は、自分宛てには送られない仕様です。
