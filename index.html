@@ -558,114 +558,16 @@ function renderBrassPushControls() {
     card.appendChild(area);
   }
 
-  const supported =
-    'Notification' in window &&
-    'serviceWorker' in navigator &&
-    'PushManager' in window;
-
-  const prefs = brassPushPrefs();
-  const permission = supported ? Notification.permission : 'unsupported';
-  const enabled = supported &&
-    permission === 'granted' &&
-    prefs.masterEnabled;
-
   area.innerHTML = `
     <div style="padding:12px 0">
-      <p id="brassPushStatus" class="muted"></p>
-      <button id="brassPushToggleButton"
-        type="button" class="btn primary">
-        ${enabled ? '通知をオフにする' : '通知をオンにする'}
-      </button>
-      <div style="margin-top:14px">
-        <label style="display:flex;gap:8px;align-items:center">
-          <input id="brassPushSound" type="checkbox"
-            style="width:auto"
-            ${prefs.soundEnabled ? 'checked' : ''}>
-          通知音を有効にする
-        </label>
-        <label style="display:flex;gap:8px;align-items:center;margin-top:10px">
-          <input id="brassPushVibration" type="checkbox"
-            style="width:auto"
-            ${prefs.vibrationEnabled ? 'checked' : ''}>
-          バイブレーションを有効にする
-        </label>
-      </div>
+      <p>通知のオン・オフは、端末の設定から変更できます。</p>
+      <p class="muted">
+        ホーム画面に追加したBRASS+は、端末の設定から通知を管理できます。
+      </p>
     </div>
   `;
-
-  const status = area.querySelector('#brassPushStatus');
-  const button = area.querySelector('#brassPushToggleButton');
-
-  if (!supported) {
-    status.textContent =
-      'この環境では通知を利用できません。ホーム画面に追加したBRASS+から開いてください。';
-    button.disabled = true;
-  } else if (permission === 'denied') {
-    status.textContent =
-      '端末の通知許可がオフです。端末の設定で変更してください。';
-    button.textContent = '通知設定の案内';
-  } else if (enabled) {
-    status.textContent = '通知はオンです。';
-  } else {
-    status.textContent = '通知はオフです。';
-  }
-
-  button.addEventListener('click', async () => {
-    if (permission === 'denied') {
-      openDeviceNotificationSettings();
-      return;
-    }
-
-    if (!enabled) {
-      await toggleBrassPush();
-      renderBrassPushControls();
-      return;
-    }
-
-    try {
-      const reg = await navigator.serviceWorker.getRegistration(
-        new URL('./', location.href).pathname
-      );
-      const sub = await reg?.pushManager?.getSubscription();
-
-      const next = brassPushPrefs();
-      next.masterEnabled = false;
-      saveBrassPushPrefs(next);
-
-      if (sub) {
-        await serverJson('/api/push/preferences', {
-          method: 'POST',
-          body: JSON.stringify({
-            endpoint: sub.endpoint,
-            enabled: false,
-            soundEnabled: next.soundEnabled,
-            vibrationEnabled: next.vibrationEnabled
-          })
-        });
-      }
-
-      renderBrassPushControls();
-      toast('通知をオフにしました');
-    } catch (e) {
-      console.error('BRASS+ push disable', e);
-      toast('通知設定を変更できませんでした');
-    }
-  });
-
-  function saveOptions() {
-    const next = brassPushPrefs();
-    next.soundEnabled =
-      area.querySelector('#brassPushSound').checked;
-    next.vibrationEnabled =
-      area.querySelector('#brassPushVibration').checked;
-    saveBrassPushPrefs(next);
-  }
-
-  area.querySelector('#brassPushSound')
-    .addEventListener('change', saveOptions);
-  area.querySelector('#brassPushVibration')
-    .addEventListener('change', saveOptions);
 }
+
 async function syncBrassPushPermission(){try{if(!('Notification' in window))return;const permission=Notification.permission;const reg=await navigator.serviceWorker?.getRegistration(new URL('./',location.href).pathname);const sub=await reg?.pushManager?.getSubscription();if(!sub)return;const p=brassPushPrefs();const enabled=permission==='granted';p.masterEnabled=enabled;localStorage.setItem(BRASS_PUSH_PREF_KEY,JSON.stringify(p));await serverJson('/api/push/preferences',{method:'POST',body:JSON.stringify({endpoint:sub.endpoint,enabled,soundEnabled:true,vibrationEnabled:true})});}catch(e){console.warn('BRASS+ notification permission sync',e)}}
 window.addEventListener('focus',syncBrassPushPermission);document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='visible')syncBrassPushPermission()});
 
