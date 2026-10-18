@@ -269,7 +269,66 @@ const GROUP_STATE_KEYS=['goals','practices','issues','mornings','songs','lessons
 function clearGroupData(){S.goals=[];S.practices=[];S.issues=[];S.mornings={};S.songs=[];S.lessons=[];S.voices=[];S.posts=[];S.recommendations=[];S.tags=[];S.scaleChecks={};}
 function saveCurrentGroupSnapshot(code){if(!code)return;const snap={};GROUP_STATE_KEYS.forEach(k=>snap[k]=S[k]);try{localStorage.setItem('BRASS_PLUS_GROUP_STATE_'+code,JSON.stringify(snap))}catch(e){console.warn('BRASS+ group snapshot',e)}}
 function restoreGroupSnapshot(code){clearGroupData();if(!code)return;const raw=localStorage.getItem('BRASS_PLUS_GROUP_STATE_'+code);if(!raw)return;try{const snap=JSON.parse(raw);GROUP_STATE_KEYS.forEach(k=>{if(snap[k]!==undefined)S[k]=snap[k]})}catch(e){console.warn('BRASS+ group snapshot restore',e)}}
-async function switchServerGroup(code){const c=serverConfig(),old=c.code;if(!code||code===old){closeModal();return}if(old){try{await syncServerNow()}catch(e){}saveCurrentGroupSnapshot(old)}restoreGroupSnapshot(code);saveServerConfig({...c,code,groups:[...new Set([...(c.groups||[]),old,code].filter(Boolean))]});S.profile.group=code;saveLocalOnly();accountSyncSoon();render();await serverRefresh(false,true);toast('グループを切り替えました');openGroups()}
+
+async function switchServerGroup(code) {
+  const c = serverConfig();
+  const old = c.code;
+
+  if (!code || code === old) {
+    closeModal();
+    return;
+  }
+
+  if (old) {
+    try {
+      await syncServerNow();
+    } catch (e) {
+      console.warn('切り替え前の同期', e);
+    }
+    saveCurrentGroupSnapshot(old);
+  }
+
+  restoreGroupSnapshot(code);
+
+  saveServerConfig({
+    ...c,
+    code,
+    groups: [...new Set([...(c.groups || []), old, code].filter(Boolean))]
+  });
+
+  S.profile.group = code;
+  saveLocalOnly();
+  render();
+
+  const a = brassAccount();
+
+  if (a?.token) {
+    try {
+      clearTimeout(accountSaveTimer);
+
+      const r = await fetch(serverBase() + '/api/account/data', {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+          ...accountHeaders()
+        },
+        body: JSON.stringify({ data: accountPayload() })
+      });
+
+      if (!r.ok) {
+        throw new Error('アカウントへの保存に失敗しました');
+      }
+    } catch (e) {
+      console.warn('グループ選択の保存', e);
+      toast('グループは切り替えましたが、アカウントへの保存を確認できませんでした');
+    }
+  }
+
+  await serverRefresh(false, true);
+  toast('グループを切り替えました');
+  openGroups();
+}
+
 
 function openGroups(){openModal(`<h3>共有グループ</h3><p class="muted">作成・参加すると、共有対象のデータが自動同期されます。</p>${serverGroupSettings()}<div class="row" style="margin-top:12px"><button class="btn" onclick="closeModal()">閉じる</button></div>`);serverRefresh(false)}
 let serverMembers=[];
