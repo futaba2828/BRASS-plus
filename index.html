@@ -214,7 +214,7 @@ function home(){
  <div class="card"><div class="between"><h3>目標</h3><button class="btn small" onclick="go('goals')">すべて見る</button></div>${recentGoals.length?recentGoals.map(goalMini).join(''):'<div class="empty">目標はまだありません</div>'}</div>
  <div class="card"><div class="between"><h3>ピン留めされた練習</h3><button class="btn small" onclick="go('practice')">練習へ</button></div>${pinned.length?pinned.map(practiceMini).join(''):'<div class="empty">ピン留めされた練習はありません</div>'}</div>
  <div class="card"><div class="between"><h3>課題点</h3><button class="btn small" onclick="go('issues')">管理</button></div>${activeIssues.length?activeIssues.slice(0,8).map(issueMini).join(''):'<div class="empty">未完了の課題点はありません</div>'}</div>
- <div class="card"><div class="between"><h3>今週の朝練王</h3><span class="badge">${mg}/4回</span></div><p class="muted">${mg===4?'今週の朝練4回達成！':`今週の参加回数：${mg}/4回`}</p>${morningRanking()}</div>
+ <div class="card"><div class="between"><h3>今週の朝練王</h3><span class="badge">${mg}/4回</span></div><p class="muted">${mg===4?'今週の朝練4回達成！':`今週の参加回数：${mg}/4回`}</p>${morningRanking()}<p class="muted" style="margin:10px 0 0">毎週月曜日に更新されます。</p></div>
  </section>`
 }
 function goalMini(g){return `<div class="item" onclick="openGoal('${g.id}')"><div class="item-main"><div class="between"><b>${esc(g.title)}</b><span class="stars">${'★'.repeat(g.star)}${'☆'.repeat(5-g.star)}</span></div><span class="badge">${esc(g.type||'目標')}</span><span class="muted">${esc(g.start||'')} ${g.start&&g.end?'～ ':''}${esc(g.end||'')}</span></div></div>`}
@@ -518,7 +518,23 @@ function morningWeekStart(){
 }
 function morningCount(){const start=morningWeekStart();let n=0;for(let i=0;i<4;i++){const d=new Date(start);d.setDate(start.getDate()+i);const ds=`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;if(S.mornings[ds])n++}return n}
 function morningDateInThisWeek(ds){const start=morningWeekStart();for(let i=0;i<4;i++){const d=new Date(start);d.setDate(start.getDate()+i);const key=`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;if(key===ds)return true}return false}
-function morningRanking(){const counts=new Map();(Array.isArray(serverMembers)?serverMembers:[]).forEach(m=>{if(!m||!m.name)return;const dates=Array.isArray(m.morningDates)?m.morningDates:[];const n=dates.length?dates.filter(morningDateInThisWeek).length:Math.max(0,Number(m.morningCount)||0);counts.set(m.name,n)});const mine=S.profile.name||'自分';counts.set(mine,morningCount());if(!counts.size||![...counts.values()].some(n=>n>0))return '<div class="empty">今週の朝練記録はまだありません</div>';const max=Math.max(...counts.values());const winners=[...counts.entries()].filter(([,n])=>n===max&&n>0);return `<div class="grid">${winners.map(([name,n])=>`<div class="stat"><span class="muted">今週の1位</span><b>${esc(name)}</b><span>${n}/4回</span></div>`).join('')}</div>`}
+function morningRanking(){
+  const counts=new Map();
+  (Array.isArray(serverMembers)?serverMembers:[]).forEach(m=>{
+    if(!m||!m.name)return;
+    // 今週の日付が確認できる記録だけを数える。日付のない累計値は今週分に流用しない。
+    const dates=Array.isArray(m.morningDates)?m.morningDates:[];
+    const thisWeekDates=[...new Set(dates.filter(ds=>typeof ds==='string'&&morningDateInThisWeek(ds)))];
+    counts.set(m.name,thisWeekDates.length);
+  });
+  const mine=S.profile.name||'自分';
+  counts.set(mine,morningCount());
+  const active=[...counts.entries()].filter(([,n])=>n>0);
+  if(!active.length)return '<div class="empty">今週の朝練記録はまだありません</div>';
+  const max=Math.max(...active.map(([,n])=>n));
+  const winners=active.filter(([,n])=>n===max);
+  return `<div class="grid">${winners.map(([name,n])=>`<div class="stat"><span class="muted">今週の1位</span><b>${esc(name)}</b><span>${n}/4回</span></div>`).join('')}</div>`;
+}
 function morningTop(){const members=Array.isArray(serverMembers)?serverMembers:[];const counts=new Map();members.filter(m=>m&&m.name).forEach(m=>{const n=Array.isArray(m.morningDates)?m.morningDates.length:Math.max(0,Number(m.morningTotalCount)||0);counts.set(m.name,n)});const mine=S.profile.name||'自分';counts.set(mine,Object.values(S.mornings||{}).filter(Boolean).length);const ranked=[...counts.entries()].filter(([,count])=>count>0).sort((a,b)=>b[1]-a[1]);if(!ranked.length)return null;const max=ranked[0][1];return {winners:ranked.filter(x=>x[1]===max).map(([name,count])=>({name,count})),count:max}}
 
 function songs(){return `<section class="page active"><div class="hero"><h2>曲リスト</h2><p>シフトごとに楽譜を分けて保存。1st / 2nd / 3rd / 4th / Bass に対応しています。</p></div><div class="card"><button class="btn primary" onclick="songForm()">＋曲を登録</button></div>${S.songs.length?S.songs.map(songCard).join(''):'<div class="empty">曲を登録してください</div>'}</section>`}
