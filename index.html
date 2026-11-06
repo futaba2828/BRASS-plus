@@ -430,6 +430,11 @@ function tagPicker(selected=[]){return `<div id="tagBox" class="row">${(S.tags||
 function addTagTemp(){let x=val('newTag');if(!x)return;S.tags=S.tags||[];if(!S.tags.includes(x))S.tags.push(x);let box=document.getElementById('tagBox');if(box){let span=document.createElement('span');span.className='tag-wrap';let b=document.createElement('button');b.type='button';b.className='tag selected';b.textContent=x;b.onclick=()=>b.classList.toggle('selected');let rm=document.createElement('button');rm.type='button';rm.className='tag-remove';rm.textContent='×';rm.setAttribute('aria-label',x+'を削除');rm.onclick=()=>removeSavedTag(x);span.append(b,rm);box.appendChild(span)}document.getElementById('newTag').value='';saveLocalOnly();serverSync()}
 function removeSavedTag(tag){if(!confirm(`保存済みタグ「${tag}」を削除しますか？`))return;S.tags=(S.tags||[]).filter(t=>t!==tag);document.querySelectorAll('#tagBox .tag-wrap').forEach(el=>{if(el.querySelector('.tag')?.textContent===tag)el.remove()});saveLocalOnly();serverSync();toast('タグを削除しました')}
 function selectedTags(){return [...document.querySelectorAll('#tagBox .tag.selected')].map(x=>x.textContent)}
+function issueRecipientOptions(selected=''){
+ const names=[...new Set((Array.isArray(serverMembers)?serverMembers:[]).map(m=>typeof m==='string'?m:m?.name).filter(Boolean))];
+ if(selected&&!names.includes(selected))names.push(selected);
+ return `<option value="">選択してください</option>${names.map(n=>`<option value="${esc(n)}" ${n===selected?'selected':''}>${esc(n)}</option>`).join('')}`;
+}
 function issueForm(x,presetSource='',presetId=''){
  let source=x?.source||presetSource,sourceId=x?.sourceId||presetId,shifts=['1st','2nd','3rd','4th','Bass'],shiftSel=x?.shifts||[];
  let defaultPeople=x?.shiftPeople||{};
@@ -439,8 +444,8 @@ function issueForm(x,presetSource='',presetId=''){
  <div class="formgrid"><div><label>小節番号（範囲）</label><div class="formgrid"><input id="iMeasureStart" inputmode="numeric" placeholder="開始" value="${esc(x?.measureStart||x?.measure||'')}"><input id="iMeasureEnd" inputmode="numeric" placeholder="終了（任意）" value="${esc(x?.measureEnd||'')}"></div></div><div><label>課題の詳細</label><input id="iDetail" value="${esc(x?.detail||'')}" placeholder="音程・リズムなど"></div></div>
  <label>シフト（タップして選択）</label><div id="shiftBox" class="choice-grid">${shifts.map(sh=>`<button type="button" class="choice ${shiftSel.includes(sh)?'selected':''}" data-shift="${sh}" onclick="this.classList.toggle('selected');refreshShiftPeople()">${sh}</button>`).join('')}</div>
  <label>担当者名</label><div id="shiftPeople">${shiftPeopleInputs(shiftSel,defaultPeople)}</div>
- <label>教わった人</label><input id="iTeacher" list="issueTeacherHistory" value="${esc(x?.teacher||'')}" placeholder="先生・先輩など"><datalist id="issueTeacherHistory">${[...new Set([...S.lessons.map(z=>z.teacher),...S.issues.map(z=>z.teacher)].filter(Boolean))].map(t=>`<option value="${esc(t)}">`).join('')}</datalist>
- <label>宛先</label><input id="iRecipient" value="${esc(x?.recipient||'')}" placeholder="先生・先輩・パートリーダーなど">
+ <label>教わった人</label><input id="iTeacher" list="issueTeacherHistory" value="${esc(x?.teacher||'')}"><datalist id="issueTeacherHistory">${[...new Set([...S.lessons.map(z=>z.teacher),...S.issues.map(z=>z.teacher)].filter(Boolean))].map(t=>`<option value="${esc(t)}">`).join('')}</datalist>
+ <label>宛先</label><select id="iRecipient">${issueRecipientOptions(x?.recipient||'')}</select>
  <label>タグ</label>${tagPicker(x?.tags||[])}
  <label>メモ</label><textarea id="iMemo">${esc(x?.memo||'')}</textarea>
  <label>写真/動画/ファイルを選択</label><input id="iAudio" type="file" accept="audio/*,image/*,video/*" multiple>${x?.audio?`<audio class="audio" controls src="${x.audio}"></audio>`:''}
@@ -463,8 +468,8 @@ function getShiftPeople(){let o={};document.querySelectorAll('.shift-person').fo
 function formatIssueMeasure(x){let a=x.measureStart||x.measure||'',b=x.measureEnd||'';if(!a)return '';return b&&b!==a?`${esc(a)}～${esc(b)}小節目`:`${esc(a)}小節目`}
 function issueSort(a,b){return (+a.measureStart||+a.measure||999999)-(+b.measureStart||+b.measure||999999)}
 function issues(){
- let arr=[...S.issues].sort(issueSort);
- return `<section class="page active"><div class="hero"><h2>課題点</h2><p>曲・練習・レッスンから同じ形式で登録できます。</p></div><div class="card"><button class="btn primary" onclick="issueForm()">＋課題点を登録</button></div>${arr.length?arr.map(issueCard).join(''):'<div class="empty">課題点はまだありません</div>'}<div class="card"><h3>課題点のAI分析</h3>${analysis()}</div></section>`
+ let arr=[...S.issues].sort(issueSort),mine=arr.filter(x=>x.recipient&&x.recipient===(S.profile.name||''));
+ return `<section class="page active"><div class="hero"><h2>課題点</h2><p>曲・練習・レッスンから同じ形式で登録できます。</p></div><div class="card"><button class="btn primary" onclick="issueForm()">＋課題点を登録</button></div><div class="card"><h3>自分宛ての課題点</h3>${mine.length?mine.map(issueCard).join(''):'<div class="empty">自分宛ての課題点はありません</div>'}</div><h3>みんなの課題点</h3>${arr.length?arr.map(issueCard).join(''):'<div class="empty">課題点はまだありません</div>'}<div class="card"><h3>課題点のAI分析</h3>${analysis()}</div></section>`
 }
 function issueCard(x){return `<div class="item swipe" data-id="${x.id}" data-type="issue"><div class="item-main"><div class="between"><div><b>${esc(x.title)}</b>${x.done?`<span class="badge">できるようになった</span>`:''}</div><button class="btn small" onclick="event.stopPropagation();completeIssue('${x.id}')">${x.done?'未完了':'完了'}</button></div><div class="row">${(x.tags||[]).map(t=>`<span class="tag selected">${esc(t)}</span>`).join('')}</div><div class="muted">${formatIssueMeasure(x)}${x.teacher?' ・教わった人：'+esc(x.teacher):''}${x.recipient?' ・宛先：'+esc(x.recipient):''}</div>${x.detail?`<div>${esc(x.detail)}</div>`:''}${x.memo?`<div class="muted">${esc(x.memo)}</div>`:''}</div><div class="item-actions"><button onclick="editIssue('${x.id}')">編集</button><button class="del" onclick="delIssue('${x.id}')">削除</button></div></div>`}
 function saveIssue(id){
